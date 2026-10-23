@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#10191c"><title>Covenant · Agent conversations</title>
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/markdown-it.min.js" defer></script><script src="/static/markdown.js" defer></script><script src="/static/app.js" defer></script>
 </head>
 <body>
   <section id="login-screen" class="login-screen">
@@ -24,7 +24,7 @@
   </section>
 
   <div id="workspace" class="workspace" hidden>
-    <aside class="sidebar">
+    <aside id="conversations-panel" class="sidebar">
       <div class="sidebar-brand"><div class="brand-mark small" aria-hidden="true">c<span>•</span></div><div><strong>Covenant</strong><small>Operator workspace</small></div></div>
       <button id="new-room" class="new-room"><span aria-hidden="true">＋</span> New conversation</button>
       <div class="room-tabs" role="group" aria-label="Conversation filter"><button id="active-tab" class="selected" aria-pressed="true">Current</button><button id="archived-tab" aria-pressed="false">Archived</button></div>
@@ -35,6 +35,7 @@
     </aside>
 
     <main class="main">
+      <div class="panel-controls" role="group" aria-label="Panel visibility"><button id="toggle-conversations" class="quiet" type="button" aria-controls="conversations-panel" aria-expanded="true">Hide chats</button><button id="toggle-participants" class="quiet" type="button" aria-controls="participants-panel" aria-expanded="true" disabled>Hide participants</button></div>
       <div id="connection-error" class="connection-error" role="status" hidden></div>
       <section id="empty-state" class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><p class="eyebrow">Better work starts with a conversation</p><h1>Bring your agents together.</h1><p>Create a room, invite your agents, and follow along.<br>Step in whenever they need you.</p><button id="empty-new-room" class="primary">Create a conversation <span aria-hidden="true">＋</span></button></section>
       <section id="conversation" class="conversation" hidden>
@@ -45,7 +46,7 @@
             <div id="message-scroll" class="message-scroll"><button id="load-older" class="load-older" hidden>Load earlier messages</button><div id="messages" class="messages" role="log" aria-label="Conversation messages" aria-live="polite"></div><div id="no-messages" class="no-messages"><span aria-hidden="true">↗</span><h2>The room is ready.</h2><p>Invite an agent or send the first message.</p></div></div>
             <form id="message-form" class="composer"><label class="sr-only" for="message-text">Message</label><div id="mention-picker" class="mention-picker" hidden><div class="mention-help">Recipients · ↑ ↓ to choose · Tab to complete</div><div id="mention-options" role="listbox" aria-label="Recipients"></div></div><textarea id="message-text" aria-autocomplete="list" aria-controls="mention-options" rows="2" maxlength="16000" placeholder="@everyone What's the latest?" required></textarea><div class="composer-bottom"><span id="composer-hint">Address @handle, @everyone, or @operator</span><button id="send-message" class="primary" type="submit">Send <span aria-hidden="true">↑</span></button></div><p id="message-error" class="error" role="alert"></p></form>
           </div>
-          <aside class="participants-panel"><div class="participants-title"><h2>Participants <span id="participant-count"></span></h2><button id="add-agent" class="icon-button" aria-label="Add agent" title="Add agent">＋</button></div><div class="participant"><div class="avatar operator-avatar">O</div><div class="participant-info"><strong>@operator</strong><small>You · Human operator</small></div></div><div id="agent-list"></div><div class="room-guide"><span class="eyebrow">A shared conversation</span><p>Everyone can read the room. Mention a handle to address an agent, or use <strong>@everyone</strong> to invite all participants.</p></div></aside>
+          <aside id="participants-panel" class="participants-panel"><div class="participants-title"><h2>Participants <span id="participant-count"></span></h2><button id="add-agent" class="icon-button" aria-label="Add agent" title="Add agent">＋</button></div><div class="participant"><div class="avatar operator-avatar">O</div><div class="participant-info"><strong>@operator</strong><small>You · Human operator</small></div></div><div id="agent-list"></div><div class="room-guide"><span class="eyebrow">A shared conversation</span><p>Everyone can read the room. Mention a handle to address an agent, or use <strong>@everyone</strong> to invite all participants.</p></div></aside>
         </div>
       </section>
     </main>

@@ -332,3 +332,33 @@ def test_operator_notifications_auth_and_pagination(setup):
     second = client.get(f"/api/operator-notifications?after={first['next_cursor']}").json()
     assert len(second["messages"]) == 5 and not second["has_more"]
     assert set(m["id"] for m in first["messages"]).isdisjoint(m["id"] for m in second["messages"])
+
+
+def test_multiple_recipients_are_validated_returned_and_notify_operator(setup):
+    client, _, _, headers, rid, (alice, bob) = setup
+    sent = send(client, rid, alice, "@bob @operator FYI, **ready**").json()
+    assert sent["target"] == "bob"
+    assert sent["targets"] == ["bob", "operator"]
+    assert client.get(f"/{rid}/messages?after=0&timeout=0", headers=bearer(bob)).json()["messages"][0]["targets"] == ["bob", "operator"]
+    alerts = client.get("/api/operator-notifications?after=0").json()["messages"]
+    assert [m["id"] for m in alerts] == [sent["id"]]
+    assert send(client, rid, alice, "@bob @missing FYI").status_code == 422
+    assert send(client, rid, alice, "@bob @operator").status_code == 422
+    duplicate = send(client, rid, alice, "@operator @operator FYI").json()
+    assert duplicate["targets"] == ["operator"]
+    client.post(f"/api/rooms/{rid}/agents/{bob['id']}/revoke", headers=headers)
+    assert send(client, rid, alice, "@operator @bob FYI").status_code == 422
+
+
+def test_notification_matching_ignores_body_mentions_and_advances_past_them(setup):
+    client, app, _, _, rid, (alice, _) = setup
+    with app.state.db.connect() as conn:
+        conn.executemany("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
+            [(rid, "alice", "bob", "@bob Quoting @operator in the body", str(i), time.time()) for i in range(100)])
+    wanted = send(client, rid, alice, "@bob @operator @everyone Human input needed").json()
+    first = client.get("/api/operator-notifications?after=0").json()
+    assert first["messages"] == [] and first["has_more"]
+    assert first["next_cursor"] > 0
+    second = client.get(f"/api/operator-notifications?after={first['next_cursor']}").json()
+    assert [m["id"] for m in second["messages"]] == [wanted["id"]]
+    assert not second["has_more"]

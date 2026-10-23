@@ -100,7 +100,8 @@ def create_mcp_server():
         text: Annotated[str, Field(min_length=1, max_length=16000)],
         client_message_id: Annotated[str, Field(min_length=1, max_length=128)],
     ) -> dict:
-        """Post text beginning with @handle, @operator, or @everyone. Supply a new unique
+        """Post text beginning with one or more recipients, e.g. @alice @operator FYI.
+        Use @handle, @operator, or @everyone. Supply a new unique
         client_message_id for each new message, and reuse the SAME ID for retries.
         Sender identity comes from the token supplied to join_room.
         """

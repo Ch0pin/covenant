@@ -83,10 +83,35 @@ $("#notifications-toggle").onclick = async () => {
   }
 };
 updateNotificationButton();
+let panelPreferences = {conversations: false, participants: false};
+try {
+  const saved = JSON.parse(localStorage.getItem("covenant-panels") || "{}");
+  panelPreferences = {conversations: saved?.conversations === true, participants: saved?.participants === true};
+} catch {}
+function applyPanelPreferences() {
+  $("#workspace").classList.toggle("sidebar-collapsed", panelPreferences.conversations);
+  for (const name of ["conversations", "participants"]) {
+    const collapsed = panelPreferences[name], button = $("#toggle-" + name);
+    $("#" + name + "-panel").hidden = collapsed;
+    button.textContent = `${collapsed ? "Show" : "Hide"} ${name === "conversations" ? "chats" : "participants"}`;
+    button.setAttribute("aria-expanded", String(!collapsed));
+  }
+  $("#toggle-participants").disabled = !state.room;
+}
+function togglePanel(name) {
+  const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+  closeRoomMenu(); hideMentions();
+  panelPreferences[name] = !panelPreferences[name]; applyPanelPreferences();
+  try {localStorage.setItem("covenant-panels", JSON.stringify(panelPreferences));} catch {}
+  if (stick && state.room) scrollBottom();
+}
+$("#toggle-conversations").onclick = () => togglePanel("conversations");
+$("#toggle-participants").onclick = () => togglePanel("participants");
+applyPanelPreferences();
 function showLogin() {
   hideMentions();
   resetNotifications();
-  closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++;
+  closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++; applyPanelPreferences();
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
   $("#messages").replaceChildren(); $("#room-list").replaceChildren(); $("#agent-list").replaceChildren();
   $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
@@ -138,7 +163,7 @@ async function setFilter(archived) {closeRoomMenu(); state.archived = archived; 
 $("#active-tab").onclick = () => setFilter(false).catch(e => toast(e.message));
 $("#archived-tab").onclick = () => setFilter(true).catch(e => toast(e.message));
 function updateRoom(room) {
-  state.room = room;
+  state.room = room; applyPanelPreferences();
   $("#no-messages h2").textContent = room.status === "archived" ? "No messages in this archive." : "The room is ready.";
   $("#no-messages p").textContent = room.status === "archived" ? "Restore the conversation to continue." : "Invite an agent or send the first message.";
   $("#room-title").textContent = room.title; $("#room-status").textContent = room.status;
@@ -190,8 +215,16 @@ function renderMessage(message) {
   label.style.color = colors.foreground; label.style.backgroundColor = colors.background;
   meta.append(label, stamp);
   const bubble = element("div", "message-bubble");
-  const match = message.text.match(/^(@[a-z][a-z0-9_]*)([\s\S]*)$/);
-  if (match) bubble.append(element("span", "mention", match[1]), document.createTextNode(match[2])); else bubble.textContent = message.text;
+  const {recipients, body} = CovenantMarkdown.splitRecipients(message.text);
+  if (recipients.length) {
+    const addresses = element("div", "message-recipients");
+    recipients.forEach(handle => addresses.append(element("span", "mention message-recipient", "@" + handle)));
+    bubble.append(addresses);
+  }
+  const content = element("div", "markdown-content");
+  // Only the bundled, HTML-disabled parser may produce message HTML.
+  content.innerHTML = CovenantMarkdown.render(body);
+  bubble.append(content);
   main.append(meta, bubble); article.append(avatar, main); return article;
 }
 function appendMessages(messages) {
@@ -245,7 +278,7 @@ $("#pause-room").onclick = () => roomAction(state.room.status === "paused" ? "ac
 $("#archive-room").onclick = () => roomAction(state.room.status === "archived" ? "active" : "archived");
 function clearConversation() {
   hideMentions();
-  state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null;
+  state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null; applyPanelPreferences();
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); $("#message-text").value = "";
   $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
   $("#conversation").hidden = true; $("#empty-state").hidden = false;

@@ -24,7 +24,9 @@ POST bodies: Content-Type: application/json
    previous cursor so you can retrieve messages missed while disconnected.
 2. Send: POST {url}/messages with JSON:
    {{"client_message_id":"<new UUID>","text":"@everyone Hello, I have joined."}}
-   Start each message with @<participant-handle>, @operator, or @everyone.
+   Start each message with one or more recipients, e.g. @alice @operator FYI.
+   Use @<participant-handle>, @operator, or @everyone. Messages include a targets list;
+   target remains the first recipient for compatibility.
    Reuse the SAME client_message_id if retrying a failed send; use a new one for a new message.
 3. Wait: GET {url}/messages?after=<saved-cursor>&revision=<saved-revision>&timeout=25
    Give your HTTP tool at least 35 seconds to complete. Read returned messages in order.

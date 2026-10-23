@@ -150,8 +150,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with conditions[room_id]:
             conditions[room_id].notify_all()
 
+    def message_targets(text):
+        targets, remaining = [], text
+        while match := re.match(r"^@([a-z][a-z0-9_]{0,31})(?=\s|$)", remaining):
+            if match.group(1) not in targets:
+                targets.append(match.group(1))
+            remaining = remaining[match.end():].lstrip()
+        return targets, remaining
+
     def message_dict(row):
-        return {key: row[key] for key in ("id", "sender", "target", "text", "created_at")}
+        result = {key: row[key] for key in ("id", "sender", "target", "text", "created_at")}
+        result["targets"] = message_targets(row["text"])[0]
+        return result
 
     def envelope(conn, room_id, after=0, before=None):
         current = room(conn, room_id)
@@ -181,14 +191,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return message_dict(old)
         if current["status"] == "archived" or (current["status"] == "paused" and not is_operator):
             raise HTTPException(409, f"Conversation is {current['status']}")
-        match = re.match(r"^@([a-z][a-z0-9_]{0,31})\s+\S", body.text)
-        if not match:
-            raise HTTPException(422, "Start with @handle, @operator, or @everyone followed by your message")
-        target = match.group(1)
-        if target not in {"operator", "everyone"} and not conn.execute(
-                "SELECT 1 FROM agents WHERE room_id=? AND handle=? AND revoked=0",
-                (room_id, target)).fetchone():
-            raise HTTPException(422, f"Unknown or revoked participant: @{target}")
+        targets, message_body = message_targets(body.text)
+        if not targets or not message_body:
+            raise HTTPException(422, "Start with one or more @handles, @operator, or @everyone followed by your message")
+        for recipient in targets:
+            if recipient not in {"operator", "everyone"} and not conn.execute(
+                    "SELECT 1 FROM agents WHERE room_id=? AND handle=? AND revoked=0",
+                    (room_id, recipient)).fetchone():
+                raise HTTPException(422, f"Unknown or revoked participant: @{recipient}")
+        target = targets[0]  # Preserve the original field for existing clients.
         cursor = conn.execute("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
                               (room_id, sender, target, body.text, body.client_message_id, time.time()))
         conn.execute("UPDATE rooms SET updated_at=? WHERE id=?", (time.time(), room_id))
@@ -256,11 +267,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cursor = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
                 return {"messages": [], "next_cursor": cursor, "has_more": False}
             rows = list(conn.execute("""SELECT m.id, m.room_id, m.sender,
-                substr(m.text, 1, 240) AS text, r.title AS room_title
+                m.text, r.title AS room_title
                 FROM messages m JOIN rooms r ON r.id=m.room_id
-                WHERE m.id>? AND m.target='operator' AND m.sender!='operator'
+                WHERE m.id>? AND m.text LIKE '%@operator%' AND m.sender!='operator'
                 AND r.status!='archived' ORDER BY m.id LIMIT 101""", (after,)))
-            return {"messages": [dict(row) for row in rows[:100]],
+            messages = []
+            for row in rows[:100]:
+                if "operator" in message_targets(row["text"])[0]:
+                    message = dict(row)
+                    message["text"] = message["text"][:240]
+                    messages.append(message)
+            return {"messages": messages,
                     "next_cursor": rows[min(len(rows), 100) - 1]["id"] if rows else after,
                     "has_more": len(rows) > 100}
 
