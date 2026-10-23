@@ -18,7 +18,73 @@ async function api(path, options = {}) {
   }
   return data;
 }
+let notificationsEnabled = false, notificationCursor = null, notificationEpoch = 0, notificationsBusy = false;
+const visibleNotifications = new Set();
+try {notificationsEnabled = localStorage.getItem("covenant-notifications") === "on";} catch {}
+function updateNotificationButton() {
+  const button = $("#notifications-toggle");
+  const supported = "Notification" in window && window.isSecureContext;
+  button.disabled = !supported;
+  button.textContent = !supported ? "Notifications unavailable" : notificationsEnabled && Notification.permission === "granted" ? "Disable notifications" : "Enable notifications";
+  button.setAttribute("aria-pressed", String(supported && notificationsEnabled && Notification.permission === "granted"));
+}
+function resetNotifications() {
+  notificationEpoch++; notificationCursor = null;
+  for (const notification of visibleNotifications) notification.close();
+  visibleNotifications.clear();
+}
+async function refreshNotifications() {
+  if (!state.me || !notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || notificationsBusy) return;
+  const epoch = notificationEpoch;
+  notificationsBusy = true;
+  try {
+    const result = await api("/api/operator-notifications" + (notificationCursor === null ? "" : `?after=${notificationCursor}`));
+    if (epoch !== notificationEpoch || !state.me || !notificationsEnabled) return;
+    for (const message of result.messages) {
+      try {
+        const notification = new Notification(`Covenant · ${message.room_title}`, {
+          body: `@${message.sender}: ${message.text}`, tag: `covenant-${message.id}`, icon: "/static/icon.svg"
+        });
+        visibleNotifications.add(notification);
+        notification.onclose = () => visibleNotifications.delete(notification);
+        notification.onclick = () => {
+          notification.close();
+          if (!state.me || epoch !== notificationEpoch) return;
+          window.focus();
+          setFilter(false).then(() => selectRoom(message.room_id)).catch(error => toast(error.message));
+        };
+      } catch {
+        toast(`@${message.sender} needs your input in ${message.room_title}. Desktop notifications are unavailable in this browser.`);
+      }
+    }
+    notificationCursor = result.next_cursor;
+  } finally {notificationsBusy = false;}
+}
+$("#notifications-toggle").onclick = async () => {
+  if (!("Notification" in window)) return;
+  try {
+    if (notificationsEnabled && Notification.permission === "granted") {
+      notificationsEnabled = false; resetNotifications();
+    } else {
+      const epoch = notificationEpoch;
+      const permission = await Notification.requestPermission();
+      if (epoch !== notificationEpoch || !state.me) return;
+      if (permission !== "granted") {
+        toast("Allow notifications in your browser's site settings, then try again."); return;
+      }
+      notificationsEnabled = true; resetNotifications();
+      await refreshNotifications();
+      toast("Notifications enabled for new @operator messages in all chats.");
+    }
+  } catch (error) {toast(error.message);}
+  finally {
+    try {localStorage.setItem("covenant-notifications", notificationsEnabled ? "on" : "off");} catch {}
+    updateNotificationButton();
+  }
+};
+updateNotificationButton();
 function showLogin() {
+  resetNotifications();
   closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++;
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
   $("#messages").replaceChildren(); $("#room-list").replaceChildren(); $("#agent-list").replaceChildren();
@@ -26,6 +92,8 @@ function showLogin() {
 }
 async function enterWorkspace() {
   const me = await api("/api/me"); state.me = me; state.csrf = me.csrf_token;
+  resetNotifications(); updateNotificationButton();
+  await refreshNotifications();
   $("#operator-name").textContent = me.username;
   $("#login-screen").hidden = true; $("#workspace").hidden = false;
   $("#empty-state").hidden = false; $("#conversation").hidden = true;
@@ -97,13 +165,27 @@ async function selectRoom(id) {
   history.replaceState(null, "", `/${id}`); scrollBottom();
 }
 function scrollBottom() {const box = $("#message-scroll"); box.scrollTop = box.scrollHeight;}
+function senderColors(handle) {
+  let hash = 0;
+  for (const char of handle) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
+  const hue = handle === "operator" ? 150 : hash % 360;
+  return {foreground: `hsl(${hue}, 65%, 78%)`, background: `hsl(${hue}, 30%, 23%)`};
+}
+function senderAvatar(handle) {
+  const avatar = element("div", "avatar" + (handle === "operator" ? " operator-avatar" : ""), handle.slice(0, 2).toUpperCase());
+  const colors = senderColors(handle);
+  avatar.style.color = colors.foreground; avatar.style.backgroundColor = colors.background;
+  return avatar;
+}
 function renderMessage(message) {
   const own = message.sender === "operator";
   const article = element("article", "message" + (own ? " operator-message" : "")); article.dataset.id = message.id;
-  const avatar = element("div", "avatar" + (own ? " operator-avatar" : ""), message.sender.slice(0, 2).toUpperCase());
+  const avatar = senderAvatar(message.sender);
   const main = element("div", "message-main"), meta = element("div", "message-meta");
   const stamp = element("time", "message-time", timeText(message.created_at)); stamp.dateTime = new Date(message.created_at * 1000).toISOString(); stamp.title = new Date(message.created_at * 1000).toLocaleString();
-  meta.append(element("strong", "", "@" + message.sender), stamp);
+  const label = element("strong", "sender-label", message.sender), colors = senderColors(message.sender);
+  label.style.color = colors.foreground; label.style.backgroundColor = colors.background;
+  meta.append(label, stamp);
   const bubble = element("div", "message-bubble");
   const match = message.text.match(/^(@[a-z][a-z0-9_]*)([\s\S]*)$/);
   if (match) bubble.append(element("span", "mention", match[1]), document.createTextNode(match[2])); else bubble.textContent = message.text;
@@ -140,7 +222,7 @@ function renderAgents() {
   for (const agent of state.agents) {
     const row = element("div", "participant" + (agent.revoked ? " revoked" : ""));
     const info = element("div", "participant-info"); info.append(element("strong", "", "@" + agent.handle), element("small", "", seenText(agent)));
-    row.append(element("div", "avatar", agent.handle.slice(0, 2).toUpperCase()), info); list.append(row);
+    row.append(senderAvatar(agent.handle), info); list.append(row);
     if (state.room.status !== "archived") {
       const controls = element("div", "participant-controls");
       const renew = element("button", "", "Renew token"); renew.setAttribute("aria-label", `Renew token for ${agent.handle}`);
@@ -279,7 +361,7 @@ async function refreshCurrent() {
 }
 async function refresh() {
   if (!state.me || state.loading) return; state.loading = true;
-  try {await Promise.all([refreshRooms(), refreshCurrent()]); $("#connection-error").hidden = true;}
+  try {await Promise.all([refreshRooms(), refreshCurrent(), refreshNotifications()]); $("#connection-error").hidden = true;}
   catch(error) {if (state.me) {$("#connection-error").textContent = "Connection interrupted. Retrying automatically…"; $("#connection-error").hidden = false;}}
   finally {state.loading = false;}
 }

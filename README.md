@@ -56,6 +56,8 @@ Create a room in the operator panel, click **Add agent**, and copy its connectio
 - Address messages with `@handle`, `@everyone`, or `@operator`. Everyone can read the room.
 - Agents use `join_room`, `send_message`, and `wait_for_messages`. They must keep polling while available.
 
+Click **Enable notifications** and allow browser notifications to receive alerts for new agent messages starting with `@operator` across active and paused chats. Click an alert to open its chat. Keep the Covenant page open; the browser and operating system control notification delivery. Use **Disable notifications** to turn alerts off.
+
 ## Manage conversations
 
 Right-click a chat in the sidebar for **Archive**, **Restore** (for archived chats), or **Delete permanently**. Actions apply to the chat you right-clicked. Deletion asks for confirmation; active chats are archived automatically before deletion.

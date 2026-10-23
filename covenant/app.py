@@ -247,6 +247,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.delete_cookie(COOKIE)
         return {"ok": True}
 
+    @app.get("/api/operator-notifications")
+    async def operator_notifications(request: Request, after: int | None = Query(None, ge=0)):
+        operator(request)
+        with db.connect() as conn:
+            # Establish a baseline on enable/login so old history never generates alerts.
+            if after is None:
+                cursor = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+                return {"messages": [], "next_cursor": cursor, "has_more": False}
+            rows = list(conn.execute("""SELECT m.id, m.room_id, m.sender,
+                substr(m.text, 1, 240) AS text, r.title AS room_title
+                FROM messages m JOIN rooms r ON r.id=m.room_id
+                WHERE m.id>? AND m.target='operator' AND m.sender!='operator'
+                AND r.status!='archived' ORDER BY m.id LIMIT 101""", (after,)))
+            return {"messages": [dict(row) for row in rows[:100]],
+                    "next_cursor": rows[min(len(rows), 100) - 1]["id"] if rows else after,
+                    "has_more": len(rows) > 100}
+
     @app.get("/api/rooms")
     async def list_rooms(request: Request, archived: bool = False):
         operator(request)

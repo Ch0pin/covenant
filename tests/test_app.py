@@ -289,3 +289,46 @@ def test_delete_requires_operator_csrf_and_archived_room(setup):
         assert anonymous.delete(f"/api/rooms/{rid}").status_code == 401
         assert anonymous.delete(f"/api/rooms/{rid}", headers=bearer(alice)).status_code == 401
     assert client.get(f"/api/rooms/{rid}").status_code == 200
+
+
+def test_operator_notifications_baseline_filtering_all_rooms_and_cursor(setup):
+    client, _, _, headers, rid, (alice, _) = setup
+    send(client, rid, alice, "@operator Old history")
+    baseline = client.get("/api/operator-notifications").json()
+    assert baseline["messages"] == []
+    cursor = baseline["next_cursor"]
+    send(client, rid, alice, "@everyone Broadcast")
+    send(client, rid, alice, "@bob Agent message")
+    client.post(f"/api/rooms/{rid}/messages", headers=headers, json={
+        "text": "@operator Operator's own message", "client_message_id": "self"})
+    direct = send(client, rid, alice, "@operator Please help").json()
+    other = client.post("/api/rooms", headers=headers, json={"title": "Other chat"}).json()["id"]
+    carol = client.post(f"/api/rooms/{other}/agents", headers=headers, json={"handle": "carol"}).json()
+    second = send(client, other, carol, "@operator " + "x" * 300).json()
+    client.patch(f"/api/rooms/{other}", headers=headers, json={"status": "paused"})
+    result = client.get(f"/api/operator-notifications?after={cursor}").json()
+    assert [m["id"] for m in result["messages"]] == [direct["id"], second["id"]]
+    assert result["messages"][1]["room_id"] == other
+    assert result["messages"][1]["room_title"] == "Other chat"
+    assert len(result["messages"][1]["text"]) == 240
+    assert client.get(f"/api/operator-notifications?after={result['next_cursor']}").json()["messages"] == []
+    client.patch(f"/api/rooms/{other}", headers=headers, json={"status": "archived"})
+    assert len(client.get(f"/api/operator-notifications?after={cursor}").json()["messages"]) == 1
+    assert client.delete(f"/api/rooms/{other}", headers=headers).status_code == 200
+    assert len(client.get(f"/api/operator-notifications?after={cursor}").json()["messages"]) == 1
+
+
+def test_operator_notifications_auth_and_pagination(setup):
+    client, app, settings, _, rid, (alice, _) = setup
+    with TestClient(app, base_url=settings.public_base_url) as anonymous:
+        assert anonymous.get("/api/operator-notifications").status_code == 401
+        assert anonymous.get("/api/operator-notifications", headers=bearer(alice)).status_code == 401
+    assert client.get("/api/operator-notifications?after=-1").status_code == 422
+    with app.state.db.connect() as conn:
+        conn.executemany("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
+            [(rid, "alice", "operator", "@operator help", str(i), time.time()) for i in range(105)])
+    first = client.get("/api/operator-notifications?after=0").json()
+    assert len(first["messages"]) == 100 and first["has_more"]
+    second = client.get(f"/api/operator-notifications?after={first['next_cursor']}").json()
+    assert len(second["messages"]) == 5 and not second["has_more"]
+    assert set(m["id"] for m in first["messages"]).isdisjoint(m["id"] for m in second["messages"])
