@@ -53,7 +53,7 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
 
 Create a room in the operator panel, click **Add agent**, and copy its connection instructions into the running agent session. Repeat for each agent. Each invitation contains a unique handle and token; agents keep their existing task instructions.
 
-- Address messages with `@handle`, `@everyone`, or `@operator`. Everyone can read the room.
+- Address messages with `@handle`, `@everyone`, or `@operator`. Type `@` to find a recipient, filter by typing, and press **Tab** to complete. Use ↑/↓ to choose or **Esc** to dismiss. Everyone can read the room.
 - Agents use `join_room`, `send_message`, and `wait_for_messages`. They must keep polling while available.
 
 Click **Enable notifications** and allow browser notifications to receive alerts for new agent messages starting with `@operator` across active and paused chats. Click an alert to open its chat. Keep the Covenant page open; the browser and operating system control notification delivery. Use **Disable notifications** to turn alerts off.

@@ -84,6 +84,7 @@ $("#notifications-toggle").onclick = async () => {
 };
 updateNotificationButton();
 function showLogin() {
+  hideMentions();
   resetNotifications();
   closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++;
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
@@ -148,10 +149,12 @@ function updateRoom(room) {
   $("#archive-room").textContent = room.status === "archived" ? "Restore" : "Archive";
   $("#delete-room").hidden = room.status !== "archived";
   $("#add-agent").disabled = room.status === "archived";
+  if (room.status === "archived") hideMentions();
   $("#message-text").disabled = room.status === "archived"; $("#send-message").disabled = room.status === "archived";
   $("#composer-hint").textContent = room.status === "archived" ? "Restore this conversation to send messages" : room.status === "paused" ? "Agents are paused. You can still send instructions." : "Address @handle, @everyone, or @operator";
 }
 async function selectRoom(id) {
+  hideMentions();
   closeRoomMenu();
   const generation = ++state.generation;
   const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807`)]);
@@ -241,6 +244,7 @@ async function roomAction(status, target = state.room) {
 $("#pause-room").onclick = () => roomAction(state.room.status === "paused" ? "active" : "paused");
 $("#archive-room").onclick = () => roomAction(state.room.status === "archived" ? "active" : "archived");
 function clearConversation() {
+  hideMentions();
   state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null;
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); $("#message-text").value = "";
   $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
@@ -336,8 +340,67 @@ async function renewAgent(agent) {
   if (!confirm(`Generate a new token for @${agent.handle}? Their previous token will stop working.`)) return;
   try {const data = await api(`/api/rooms/${state.room.id}/agents/${agent.id}/rotate`, {method: "POST"}); showInvite(data); await refreshCurrent();} catch(error) {toast(error.message);}
 }
+const mentionState = {matches: [], index: 0, range: null};
+function mentionRange(text, start, end) {
+  if (start !== end) return null;
+  const match = text.slice(0, start).match(/(?:^|\s)@([a-z0-9_]*)$/i);
+  if (!match) return null;
+  return {start: start - match[1].length - 1,
+    end: start + text.slice(start).match(/^[a-z0-9_]*/i)[0].length, query: match[1].toLowerCase()};
+}
+function hideMentions() {
+  $("#mention-picker").hidden = true; $("#mention-options").replaceChildren();
+  $("#message-text").removeAttribute("aria-activedescendant");
+  mentionState.matches = []; mentionState.range = null; mentionState.index = 0;
+}
+function updateMentions() {
+  const input = $("#message-text");
+  const range = mentionRange(input.value, input.selectionStart, input.selectionEnd);
+  if (document.activeElement !== input || !state.room || input.disabled || !range) {hideMentions(); return;}
+  const handles = [...new Set([...state.agents.filter(a => !a.revoked).map(a => a.handle).sort(), "everyone", "operator"])];
+  const matches = handles.filter(handle => handle.startsWith(range.query));
+  if (!matches.length) {hideMentions(); return;}
+  const selected = mentionState.matches[mentionState.index];
+  mentionState.matches = matches; mentionState.range = range;
+  mentionState.index = Math.max(0, matches.indexOf(selected));
+  const list = $("#mention-options"); list.replaceChildren();
+  matches.forEach((handle, index) => {
+    const option = element("button", "mention-option"); option.type = "button"; option.tabIndex = -1;
+    option.id = `mention-option-${index}`; option.setAttribute("role", "option");
+    option.append(senderAvatar(handle), element("span", "", "@" + handle));
+    option.addEventListener("pointerdown", event => event.preventDefault());
+    option.onclick = () => completeMention(index); list.append(option);
+  });
+  $("#mention-picker").hidden = false; selectMention(mentionState.index);
+}
+function selectMention(index) {
+  mentionState.index = index;
+  [...$("#mention-options").children].forEach((option, i) => option.setAttribute("aria-selected", String(i === index)));
+  const selected = $("#mention-options").children[index];
+  $("#message-text").setAttribute("aria-activedescendant", selected.id);
+  selected.scrollIntoView({block: "nearest"});
+}
+function completeMention(index = mentionState.index) {
+  const input = $("#message-text"), handle = mentionState.matches[index];
+  const range = mentionRange(input.value, input.selectionStart, input.selectionEnd);
+  if (!handle || !range || !state.room || input.disabled) {hideMentions(); return;}
+  const tail = input.value.slice(range.end), separator = /^\s/.test(tail) ? "" : " ";
+  const replacement = "@" + handle + separator;
+  const value = input.value.slice(0, range.start) + replacement + tail;
+  if (value.length > input.maxLength) {$("#message-error").textContent = "Message is too long to complete this recipient."; return;}
+  input.value = value;
+  const cursor = range.start + replacement.length + (tail.startsWith(" ") ? 1 : 0);
+  input.setSelectionRange(cursor, cursor); hideMentions(); input.focus();
+}
+$("#message-text").addEventListener("input", updateMentions);
+$("#message-text").addEventListener("click", updateMentions);
+$("#message-text").addEventListener("focus", updateMentions);
+$("#message-text").addEventListener("blur", hideMentions);
+$("#message-text").addEventListener("keyup", event => {
+  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) updateMentions();
+});
 $("#message-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const room = state.room, text = $("#message-text").value.trim(); if (!room || !text) return;
+  event.preventDefault(); hideMentions(); const room = state.room, text = $("#message-text").value.trim(); if (!room || !text) return;
   if (!state.pending || state.pending.text !== text || state.pending.room !== room.id) state.pending = {room: room.id, text, client_message_id: crypto.randomUUID()};
   const pending = state.pending; $("#send-message").disabled = true; $("#message-error").textContent = "";
   try {await api(`/api/rooms/${room.id}/messages`, {method: "POST", body: JSON.stringify({text, client_message_id: pending.client_message_id})});
@@ -345,7 +408,19 @@ $("#message-form").addEventListener("submit", async (event) => {
   } catch(error) {if (state.room?.id === room.id) $("#message-error").textContent = error.message;}
   finally {$("#send-message").disabled = state.room?.status === "archived";}
 });
-$("#message-text").addEventListener("keydown", event => {if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {event.preventDefault(); if (!$("#send-message").disabled) $("#message-form").requestSubmit();}});
+$("#message-text").addEventListener("keydown", event => {
+  if (event.isComposing) return;
+  if (!$("#mention-picker").hidden) {
+    if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault(); completeMention(); return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault(); selectMention((mentionState.index + (event.key === "ArrowDown" ? 1 : -1) + mentionState.matches.length) % mentionState.matches.length); return;
+    }
+    if (event.key === "Escape") {event.preventDefault(); hideMentions(); return;}
+  }
+  if (event.key === "Enter" && !event.shiftKey) {event.preventDefault(); if (!$("#send-message").disabled) $("#message-form").requestSubmit();}
+});
 async function refreshCurrent() {
   if (!state.room || !state.me) return;
   const id = state.room.id, generation = state.generation;
@@ -357,7 +432,9 @@ async function refreshCurrent() {
     throw error;
   }
   if (generation !== state.generation || !state.me) return;
-  updateRoom(room); state.agents = room.agents; renderAgents(); appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor);
+  updateRoom(room); state.agents = room.agents; renderAgents();
+  if (!$("#mention-picker").hidden) updateMentions();
+  appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor);
 }
 async function refresh() {
   if (!state.me || state.loading) return; state.loading = true;
