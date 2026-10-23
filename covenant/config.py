@@ -31,7 +31,7 @@ class Settings:
                 f"http://localhost:{self.port}"}
 
     @classmethod
-    def load(cls):
+    def load(cls, *, public_base_url: str | None = None):
         values = {}
         env_file = ROOT / ".env"
         if env_file.exists():
@@ -41,6 +41,8 @@ class Settings:
                     key, value = line.split("=", 1)
                     values[key.strip()] = value.strip().strip("\"'")
         values.update(os.environ)
+        if public_base_url is not None:
+            values["PUBLIC_BASE_URL"] = public_base_url
         db = Path(values.get("DATABASE_PATH", str(ROOT / "data" / "covenant.sqlite3")))
         if not db.is_absolute():
             db = ROOT / db

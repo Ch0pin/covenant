@@ -14,11 +14,12 @@ def main():
     init = sub.add_parser("init", help="Create the operator account locally")
     init.add_argument("--username", default="operator")
     init.add_argument("--password-stdin", action="store_true", help="Read password from stdin")
-    sub.add_parser("serve", help="Run the local server")
+    serve = sub.add_parser("serve", help="Run the local server")
+    serve.add_argument("--public-base-url", help="Public tunnel URL (overrides PUBLIC_BASE_URL for this run)")
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        settings = Settings.load()
+        settings = Settings.load(public_base_url=getattr(args, "public_base_url", None))
     except ValueError as exc:
         parser.error(str(exc))
     db = Database(settings.database)

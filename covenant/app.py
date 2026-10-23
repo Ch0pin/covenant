@@ -286,6 +286,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await notify(rid)
         return result
 
+    @app.delete("/api/rooms/{room_id}")
+    async def delete_room(room_id: UUID, request: Request):
+        operator(request)
+        rid = str(room_id)
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if room(conn, rid)["status"] != "archived":
+                raise HTTPException(409, "Archive this conversation before deleting it")
+            conn.execute("DELETE FROM messages WHERE room_id=?", (rid,))
+            conn.execute("DELETE FROM agents WHERE room_id=?", (rid,))
+            conn.execute("DELETE FROM rooms WHERE id=?", (rid,))
+        await notify(rid)
+        return {"ok": True}
+
     @app.post("/api/rooms/{room_id}/agents", status_code=201)
     async def add_agent(room_id: UUID, body: NewAgent, request: Request):
         operator(request)

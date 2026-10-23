@@ -248,3 +248,44 @@ def test_mixed_case_handle_matches_form_and_creates_canonical_identity(setup):
     for duplicate in ("sol", "SOL", "sOl"):
         assert client.post(f"/api/rooms/{rid}/agents", headers=headers,
                            json={"handle": duplicate}).status_code == 409
+
+
+def test_delete_archived_room_removes_history_and_access_only_for_that_room(setup):
+    client, app, settings, headers, rid, (alice, bob) = setup
+    send(client, rid, alice)
+    other = client.post("/api/rooms", headers=headers, json={"title": "Keep me"}).json()["id"]
+    other_agent = client.post(f"/api/rooms/{other}/agents", headers=headers, json={"handle": "carol"}).json()
+    send(client, other, other_agent)
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "archived"})
+    assert client.delete(f"/api/rooms/{rid}", headers=headers).status_code == 200
+    assert client.get(f"/api/rooms/{rid}").status_code == 404
+    assert client.get(f"/api/rooms/{rid}/messages").status_code == 404
+    assert client.get("/api/rooms?archived=true").json()["rooms"] == []
+    assert client.delete(f"/api/rooms/{rid}", headers=headers).status_code == 404
+    for invitation in (alice, bob):
+        assert client.post(f"/{rid}/join", headers=bearer(invitation)).status_code == 401
+        assert client.get(f"/{rid}/messages?timeout=0", headers=bearer(invitation)).status_code == 401
+        assert send(client, rid, invitation).status_code == 401
+    with app.state.db.connect() as conn:
+        for table in ("messages", "agents"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE room_id=?", (rid,)).fetchone()[0] == 0
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as restarted:
+        assert restarted.post(f"/{rid}/join", headers=bearer(alice)).status_code == 401
+        remaining = restarted.post(f"/{other}/join", headers=bearer(other_agent)).json()
+        assert remaining["room"]["title"] == "Keep me"
+        assert len(remaining["messages"]) == 1
+
+
+def test_delete_requires_operator_csrf_and_archived_room(setup):
+    client, app, settings, headers, rid, (alice, _) = setup
+    for status in ("active", "paused"):
+        client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": status})
+        assert client.delete(f"/api/rooms/{rid}", headers=headers).status_code == 409
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "archived"})
+    assert client.delete(f"/api/rooms/{rid}").status_code == 403
+    assert client.delete(f"/api/rooms/{rid}", headers={**headers, "Origin": "https://evil.example"}).status_code == 403
+    with TestClient(app, base_url=settings.public_base_url) as anonymous:
+        assert anonymous.delete(f"/api/rooms/{rid}").status_code == 401
+        assert anonymous.delete(f"/api/rooms/{rid}", headers=bearer(alice)).status_code == 401
+    assert client.get(f"/api/rooms/{rid}").status_code == 200

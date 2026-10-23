@@ -13,12 +13,13 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({detail: "Unexpected server response"}));
   if (!response.ok) {
     if (response.status === 401 && state.me) showLogin();
-    throw new Error(typeof data.detail === "string" ? data.detail : "Request failed");
+    const error = new Error(typeof data.detail === "string" ? data.detail : "Request failed");
+    error.status = response.status; throw error;
   }
   return data;
 }
 function showLogin() {
-  state.me = null; state.csrf = ""; state.room = null; state.generation++;
+  closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++;
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
   $("#messages").replaceChildren(); $("#room-list").replaceChildren(); $("#agent-list").replaceChildren();
   $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
@@ -48,6 +49,13 @@ function renderRooms() {
   if (!state.rooms.length) list.append(element("p", "list-empty", state.archived ? "Archived conversations will appear here." : "Your first conversation starts here."));
   for (const room of state.rooms) {
     const button = element("button", "room-item" + (state.room?.id === room.id ? " selected" : ""));
+    button.dataset.roomId = room.id; button.setAttribute("aria-haspopup", "menu");
+    button.addEventListener("contextmenu", event => {event.preventDefault(); openRoomMenu(room, event.clientX, event.clientY);});
+    button.addEventListener("keydown", event => {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault(); const rect = button.getBoundingClientRect(); openRoomMenu(room, rect.left, rect.bottom);
+      }
+    });
     button.setAttribute("aria-label", room.title); if (state.room?.id === room.id) button.setAttribute("aria-current", "page");
     button.append(element("div", "room-avatar", "#"));
     const content = element("div", "room-item-content"), line = element("div", "room-item-line");
@@ -57,7 +65,7 @@ function renderRooms() {
   }
 }
 async function refreshRooms() {const archived = state.archived; const result = await api(`/api/rooms?archived=${archived}`); if (archived !== state.archived || !state.me) return; state.rooms = result.rooms; renderRooms();}
-async function setFilter(archived) {state.archived = archived; $("#active-tab").classList.toggle("selected", !archived); $("#archived-tab").classList.toggle("selected", archived); $("#active-tab").setAttribute("aria-pressed", String(!archived)); $("#archived-tab").setAttribute("aria-pressed", String(archived)); await refreshRooms();}
+async function setFilter(archived) {closeRoomMenu(); state.archived = archived; $("#active-tab").classList.toggle("selected", !archived); $("#archived-tab").classList.toggle("selected", archived); $("#active-tab").setAttribute("aria-pressed", String(!archived)); $("#archived-tab").setAttribute("aria-pressed", String(archived)); await refreshRooms();}
 $("#active-tab").onclick = () => setFilter(false).catch(e => toast(e.message));
 $("#archived-tab").onclick = () => setFilter(true).catch(e => toast(e.message));
 function updateRoom(room) {
@@ -70,11 +78,13 @@ function updateRoom(room) {
   $("#objective-box").hidden = !room.objective; $("#room-objective").textContent = room.objective;
   $("#pause-room").hidden = room.status === "archived"; $("#pause-room").textContent = room.status === "paused" ? "Resume" : "Pause";
   $("#archive-room").textContent = room.status === "archived" ? "Restore" : "Archive";
+  $("#delete-room").hidden = room.status !== "archived";
   $("#add-agent").disabled = room.status === "archived";
   $("#message-text").disabled = room.status === "archived"; $("#send-message").disabled = room.status === "archived";
   $("#composer-hint").textContent = room.status === "archived" ? "Restore this conversation to send messages" : room.status === "paused" ? "Agents are paused. You can still send instructions." : "Address @handle, @everyone, or @operator";
 }
 async function selectRoom(id) {
+  closeRoomMenu();
   const generation = ++state.generation;
   const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807`)]);
   if (generation !== state.generation || !state.me) return;
@@ -140,14 +150,81 @@ function renderAgents() {
     }
   }
 }
-async function roomAction(status) {
-  if (!state.room) return; const id = state.room.id;
+async function roomAction(status, target = state.room) {
+  if (!target) return; const id = target.id;
   if (status === "archived" && !confirm("Archive this conversation? Messages will remain available and agents will stop their polling loops.")) return;
   try {const room = await api(`/api/rooms/${id}`, {method: "PATCH", body: JSON.stringify({status})}); if (state.room?.id === id) {updateRoom(room); renderAgents();} await setFilter(status === "archived"); toast(status === "active" ? "Conversation active" : `Conversation ${status}`);}
   catch (error) {toast(error.message);}
 }
 $("#pause-room").onclick = () => roomAction(state.room.status === "paused" ? "active" : "paused");
 $("#archive-room").onclick = () => roomAction(state.room.status === "archived" ? "active" : "archived");
+function clearConversation() {
+  state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null;
+  $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); $("#message-text").value = "";
+  $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
+  $("#conversation").hidden = true; $("#empty-state").hidden = false;
+  history.replaceState(null, "", "/"); renderRooms();
+}
+const deletingRooms = new Set();
+async function deleteRoom(target = state.room) {
+  if (!target || deletingRooms.has(target.id)) return;
+  const {id, title} = target;
+  if (!confirm(`Permanently delete "${title}"? All messages and agent access will be removed. This cannot be undone.`)) return;
+  deletingRooms.add(id);
+  const button = $("#delete-room"); button.disabled = true;
+  try {
+    if (target.status !== "archived") {
+      const archived = await api(`/api/rooms/${id}`, {method: "PATCH", body: JSON.stringify({status: "archived"})});
+      if (state.room?.id === id) {updateRoom(archived); renderAgents();}
+    }
+    await api(`/api/rooms/${id}`, {method: "DELETE"});
+    if (state.room?.id === id) clearConversation();
+    await refreshRooms(); toast("Conversation permanently deleted");
+  } catch (error) {toast(error.message);} finally {deletingRooms.delete(id); button.disabled = false;}
+}
+$("#delete-room").onclick = () => deleteRoom();
+let roomMenuTarget = null;
+function closeRoomMenu(restoreFocus = false) {
+  const id = roomMenuTarget?.id;
+  $("#room-menu").hidden = true; roomMenuTarget = null;
+  if (restoreFocus && id) document.querySelector(`[data-room-id="${id}"]`)?.focus();
+}
+function openRoomMenu(room, x, y) {
+  roomMenuTarget = room;
+  const menu = $("#room-menu");
+  $("#menu-archive").textContent = room.status === "archived" ? "Restore" : "Archive";
+  $("#menu-delete").disabled = deletingRooms.has(room.id);
+  menu.setAttribute("aria-label", `Actions for ${room.title}`); menu.hidden = false;
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+  $("#menu-archive").focus();
+}
+$("#menu-archive").onclick = () => {
+  const room = roomMenuTarget; closeRoomMenu(true);
+  if (room) roomAction(room.status === "archived" ? "active" : "archived", room);
+};
+$("#menu-delete").onclick = () => {
+  const room = roomMenuTarget; closeRoomMenu(true);
+  if (room) deleteRoom(room);
+};
+document.addEventListener("pointerdown", event => {
+  if (!$("#room-menu").contains(event.target)) closeRoomMenu();
+});
+document.addEventListener("keydown", event => {
+  if ($("#room-menu").hidden) return;
+  if (event.key === "Escape") {event.preventDefault(); closeRoomMenu(true);}
+  else if (event.key === "Tab") closeRoomMenu();
+  else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    const items = [...$("#room-menu").querySelectorAll("button:not(:disabled)")];
+    const current = items.indexOf(document.activeElement);
+    const index = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 :
+      (current + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[index]?.focus();
+  }
+});
+$("#room-list").addEventListener("scroll", () => closeRoomMenu());
+window.addEventListener("resize", () => closeRoomMenu());
 function openDialog(id) {const dialog = $(id); const form = dialog.querySelector("form"); if (form) form.reset(); const error = dialog.querySelector(".dialog-error"); if (error) error.textContent = ""; dialog.showModal();}
 $("#new-room").onclick = $("#empty-new-room").onclick = () => openDialog("#room-dialog");
 $("#add-agent").onclick = () => openDialog("#agent-dialog");
@@ -190,7 +267,13 @@ $("#message-text").addEventListener("keydown", event => {if (event.key === "Ente
 async function refreshCurrent() {
   if (!state.room || !state.me) return;
   const id = state.room.id, generation = state.generation;
-  const [room, result] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?after=${state.cursor}`)]);
+  let room, result;
+  try { [room, result] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?after=${state.cursor}`)]); }
+  catch (error) {
+    if (generation !== state.generation || !state.me) return;
+    if (error.status === 404) {clearConversation(); await refreshRooms(); return;}
+    throw error;
+  }
   if (generation !== state.generation || !state.me) return;
   updateRoom(room); state.agents = room.agents; renderAgents(); appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor);
 }
