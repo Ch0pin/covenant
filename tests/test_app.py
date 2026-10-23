@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
@@ -203,7 +204,7 @@ def test_token_and_password_storage_and_redacted_validation(setup):
 
 def test_handles_and_limits(setup):
     client, _, _, headers, rid, (alice, _) = setup
-    for handle in ("everyone", "operator", "Alice", "a b"):
+    for handle in ("everyone", "operator", "Everyone", "OPERATOR", "a b", "1agent"):
         assert client.post(f"/api/rooms/{rid}/agents", headers=headers, json={"handle": handle}).status_code == 422
     assert client.post(f"/api/rooms/{rid}/agents", headers=headers, json={"handle": "alice"}).status_code == 409
     assert send(client, rid, alice, "@everyone " + "x" * 16000).status_code == 422
@@ -228,3 +229,22 @@ def test_configuration_defaults_and_custom_port():
     assert Settings().port == 6666
     assert Settings(port=8080).port == 8080
     assert Settings(public_base_url="https://example.trycloudflare.com/").public_base_url == "https://example.trycloudflare.com"
+
+
+def test_mixed_case_handle_matches_form_and_creates_canonical_identity(setup):
+    client, _, _, headers, rid, (alice, _) = setup
+    html = client.get("/").text
+    pattern = re.search(r'name="handle"[^>]*pattern="([^"]+)"', html).group(1)
+    assert re.fullmatch(pattern, "Sol"), "The browser form must accept the user's handle"
+    response = client.post(f"/api/rooms/{rid}/agents", headers=headers, json={"handle": "Sol"})
+    assert response.status_code == 201
+    invitation = response.json()
+    assert invitation["handle"] == "sol"
+    assert "Handle: sol" in invitation["instructions"]
+    joined = client.post(f"/{rid}/join", headers=bearer(invitation)).json()
+    assert joined["handle"] == "sol"
+    assert any(p["handle"] == "sol" for p in joined["participants"])
+    assert send(client, rid, alice, "@sol Please review").status_code == 200
+    for duplicate in ("sol", "SOL", "sOl"):
+        assert client.post(f"/api/rooms/{rid}/agents", headers=headers,
+                           json={"handle": duplicate}).status_code == 409

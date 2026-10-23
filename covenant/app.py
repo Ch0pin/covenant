@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import csrf_token, digest, hash_password, verify_password
@@ -48,6 +48,11 @@ class RoomStatus(Input):
 
 class NewAgent(Input):
     handle: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+
+    @field_validator("handle", mode="before")
+    @classmethod
+    def normalize_handle(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class NewMessage(Input):
