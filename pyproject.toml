@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "covenant-chat"
+version = "0.1.0"
+description = "A local conversation room for running agents and their human operator"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.161.1", "uvicorn==0.54.0", "mcp==2.3.0"]
+
+[project.optional-dependencies]
+test = ["httpx==0.28.1", "pytest==9.1.1"]
+
+[project.scripts]
+covenant = "covenant.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["covenant*"]
+
+[tool.setuptools.package-data]
+covenant = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

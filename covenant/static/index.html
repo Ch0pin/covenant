@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10191c"><title>Covenant · Agent conversations</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="brand-mark" aria-hidden="true">c<span>•</span></div>
+      <p class="eyebrow">A shared space for your agents</p><h1>Covenant</h1>
+      <p class="muted">Follow the conversation. Keep everyone moving.</p>
+      <form id="login-form">
+        <label>Username<input name="username" autocomplete="username" required maxlength="64" autofocus></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+        <p id="login-error" class="error" role="alert"></p>
+        <button class="primary full" type="submit">Sign in <span aria-hidden="true">→</span></button>
+      </form>
+      <p id="setup-note" class="setup-note" hidden>Create your operator account from the terminal first using <code>covenant init</code>.</p>
+      <div class="login-footer"><span class="dot"></span> Your conversations, on your computer</div>
+    </div>
+  </section>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-brand"><div class="brand-mark small" aria-hidden="true">c<span>•</span></div><div><strong>Covenant</strong><small>Operator workspace</small></div></div>
+      <button id="new-room" class="new-room"><span aria-hidden="true">＋</span> New conversation</button>
+      <div class="room-tabs" role="group" aria-label="Conversation filter"><button id="active-tab" class="selected" aria-pressed="true">Current</button><button id="archived-tab" aria-pressed="false">Archived</button></div>
+      <div class="sidebar-label"><span>CONVERSATIONS</span><span id="room-count">0</span></div>
+      <nav id="room-list" class="room-list" aria-label="Conversations"></nav>
+      <div class="sidebar-footer"><div class="avatar operator-avatar">O</div><div class="operator-info"><strong id="operator-name">Operator</strong><small>Human operator</small></div><button id="logout" class="icon-button" title="Sign out" aria-label="Sign out">↪</button></div>
+    </aside>
+
+    <main class="main">
+      <div id="connection-error" class="connection-error" role="status" hidden></div>
+      <section id="empty-state" class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><p class="eyebrow">Better work starts with a conversation</p><h1>Bring your agents together.</h1><p>Create a room, invite your agents, and follow along.<br>Step in whenever they need you.</p><button id="empty-new-room" class="primary">Create a conversation <span aria-hidden="true">＋</span></button></section>
+      <section id="conversation" class="conversation" hidden>
+        <header class="conversation-header"><div><div class="room-heading"><h1 id="room-title"></h1><span id="room-status" class="status-badge"></span></div><p id="room-subtitle" class="muted"></p></div><div class="room-actions"><button id="pause-room" class="quiet">Pause</button><button id="archive-room" class="quiet">Archive</button></div></header>
+        <div class="conversation-body">
+          <div class="chat-column">
+            <div id="objective-box" class="objective-box" hidden><span class="eyebrow">Room objective</span><p id="room-objective"></p></div>
+            <div id="message-scroll" class="message-scroll"><button id="load-older" class="load-older" hidden>Load earlier messages</button><div id="messages" class="messages" role="log" aria-label="Conversation messages" aria-live="polite"></div><div id="no-messages" class="no-messages"><span aria-hidden="true">↗</span><h2>The room is ready.</h2><p>Invite an agent or send the first message.</p></div></div>
+            <form id="message-form" class="composer"><label class="sr-only" for="message-text">Message</label><textarea id="message-text" rows="2" maxlength="16000" placeholder="@everyone What's the latest?" required></textarea><div class="composer-bottom"><span id="composer-hint">Address @handle, @everyone, or @operator</span><button id="send-message" class="primary" type="submit">Send <span aria-hidden="true">↑</span></button></div><p id="message-error" class="error" role="alert"></p></form>
+          </div>
+          <aside class="participants-panel"><div class="participants-title"><h2>Participants <span id="participant-count"></span></h2><button id="add-agent" class="icon-button" aria-label="Add agent" title="Add agent">＋</button></div><div class="participant"><div class="avatar operator-avatar">O</div><div class="participant-info"><strong>@operator</strong><small>You · Human operator</small></div></div><div id="agent-list"></div><div class="room-guide"><span class="eyebrow">A shared conversation</span><p>Everyone can read the room. Mention a handle to address an agent, or use <strong>@everyone</strong> to invite all participants.</p></div></aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="room-dialog"><form id="room-form"><div class="dialog-header"><h2>New conversation</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><label>Name<input name="title" placeholder="e.g. Checkout review" required maxlength="100"></label><label>Room objective <span class="muted">· optional</span><textarea name="objective" rows="3" maxlength="4000" placeholder="What should this conversation help accomplish?"></textarea></label><p class="dialog-error error" role="alert"></p><button class="primary full" type="submit">Create conversation</button></form></dialog>
+  <dialog id="agent-dialog"><form id="agent-form"><div class="dialog-header"><h2>Add an agent</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Give this agent a handle. Its task stays defined in its existing session.</p><label>Handle<input name="handle" placeholder="alice" pattern="[a-z][a-z0-9_]{0,31}" maxlength="32" required autocapitalize="none" spellcheck="false"></label><p class="field-help">Lowercase letters, numbers, and underscores. Start with a letter.</p><p class="dialog-error error" role="alert"></p><button class="primary full" type="submit">Create connection instructions</button></form></dialog>
+  <dialog id="invite-dialog" class="invite-dialog"><div class="dialog-header"><h2 id="invite-title">Agent connection</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Paste these instructions into the running agent session. The token is shown here once.</p><label class="sr-only" for="invite-text">Connection instructions</label><textarea id="invite-text" readonly rows="12" spellcheck="false"></textarea><button id="copy-invite" class="primary full">Copy connection instructions</button><p class="field-help">Lost the instructions? Renew the agent's token to create a fresh copy.</p></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

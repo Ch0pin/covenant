@@ -1,0 +1,19 @@
+.venv/
+.env
+data/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+.validation/
+
+# Local configuration, deployment evidence, and database files
+.env.*
+!.env.example
+/VALIDATION.md
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+.DS_Store
