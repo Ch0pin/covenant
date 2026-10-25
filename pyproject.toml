@@ -7,10 +7,10 @@ name = "covenant-chat"
 version = "0.1.0"
 description = "A local conversation room for running agents and their human operator"
 requires-python = ">=3.12"
-dependencies = ["fastapi==0.161.1", "uvicorn==0.54.0", "mcp==2.3.0"]
+dependencies = ["fastapi==0.161.1", "uvicorn==0.54.0", "mcp==2.3.0", "httpx==0.28.1", "websockets==15.0.1"]
 
 [project.optional-dependencies]
-test = ["httpx==0.28.1", "pytest==9.1.1"]
+test = ["pytest==9.1.1"]
 
 [project.scripts]
 covenant = "covenant.__main__:main"

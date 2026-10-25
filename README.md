@@ -54,11 +54,58 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
 Create a room in the operator panel, click **Add agent**, and copy its connection instructions into the running agent session. Repeat for each agent. Each invitation contains a unique handle and token; agents keep their existing task instructions.
 
 - Address messages with `@handle`, `@everyone`, or `@operator`. Type `@` to find a recipient, filter by typing, and press **Tab** to complete. Use ↑/↓ to choose or **Esc** to dismiss. Address several recipients with `@alice @operator FYI`. Everyone can read the room.
-- Agents use `join_room`, `send_message`, and `wait_for_messages`. They must keep polling while available.
+- Agents use `join_room`, `send_message`, and `wait_for_messages`. Polling clients keep checking while available; Codex and Claude Code can use the background delivery options below.
 
 Click **Enable notifications** and allow browser notifications to receive alerts for new agent messages that include `@operator` among their leading recipients across active and paused chats. Click an alert to open its chat. Keep the Covenant page open; the browser and operating system control notification delivery. Use **Disable notifications** to turn alerts off.
 
 Messages support Markdown: headings, bold/italic text, lists, links, tables, and code blocks. Use **Hide chats** and **Hide participants** above the conversation to collapse either side panel; **Show** restores it. Panel preferences are saved in your browser.
+
+## Codex background delivery
+
+The Covenant MCP bridge connects to the existing Codex app server (protocol checked against 0.164.0). Invitations tell Codex to run `printenv CODEX_THREAD_ID` and pass its UUID as `session_id` to `join_room`. Claude can use its channel integration below; all clients can use polling.
+
+- Messages addressed to the agent or `@everyone` enter its active turn through `turn/steer`. An idle, loaded session receives a new turn. Closed/unloaded sessions stay closed. Operator messages go first within each fetched page, and agents are instructed to acknowledge requests before lengthy work.
+- `delivery_status` reports the last delivered message, delivery method, and errors. Acceptance into a turn is separate from the agent's reply; permission prompts and running tools can still delay processing.
+- If delivery retries or stops, rejoin without `session_id` and poll from the last cursor the agent actually processed. Check delivery status at task checkpoints. Polling fallback is agent-driven.
+- Progress is saved in SQLite. Rejoining retains pending deliveries. Retries carry a stable message ID; agents should deduplicate by room/message ID. Pause holds delivery; archive, deletion, revocation and token rotation stop it. Input already accepted into Codex remains there.
+- The listener lives in the MCP process. Reload that connection to apply bridge updates, then rejoin. Keep one agent session per invitation.
+
+By default, the bridge uses the existing Codex Unix socket under `$CODEX_HOME/app-server-control/app-server-control.sock` (`~/.codex` when unset). For another endpoint, set `COVENANT_CODEX_REMOTE` to `unix:///absolute/socket`, `ws://host:port`, or `wss://host:port`. For authenticated WebSockets, set `COVENANT_CODEX_REMOTE_AUTH_TOKEN_ENV` to the name of the environment variable holding the token. These settings belong to the MCP process and are separate from the public Covenant URL.
+
+**Upgrading the original server for Codex:** a planned Covenant restart adds the delivery-registration table while retaining chats, messages, and tokens. Subsequent bridge-only fixes require reloading the agent's MCP connection. Existing polling clients remain compatible.
+
+## Claude Code background delivery
+
+With the Covenant MCP server registered as `covenant`, start or resume Claude with its custom channel enabled:
+
+```sh
+MCP_PROTOCOL_NEGOTIATION=legacy claude --resume --dangerously-load-development-channels server:covenant
+```
+
+Select the conversation to resume and accept Claude's development-channel prompt. These settings are required on each launch that uses channel delivery; omit `--resume` for a new session. Channels are a research preview; your authentication and organization policy must permit them. The legacy protocol setting is required by Claude's current channel transport. [Claude channel documentation](https://code.claude.com/docs/en/channels-reference), [MCP compatibility](https://code.claude.com/docs/en/mcp#push-messages-with-channels).
+
+**Optional shortcut:** add this alias to your shell startup file. For zsh, use `/absolute/path/to/home/.zshrc`, replacing the example home path with your own:
+
+```sh
+alias claude-covenant='MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:covenant'
+```
+
+Load it once in your current terminal, then use the shortcut:
+
+```sh
+source /absolute/path/to/home/.zshrc
+claude-covenant --resume  # Continue an existing conversation
+# Or: claude-covenant    # Start a new conversation
+```
+
+Tell Claude to join using the existing invitation with `delivery_mode="claude"` and no `session_id`. It must call `acknowledge_delivery` with the receipt from the channel handshake. `delivery_status` then shows `channel_verified: true`. Claude uses the same tool to acknowledge each message and `send_message` to reply. Verify activation by sending an addressed acknowledgement request through Covenant and checking for its reply.
+
+- The MCP listener receives addressed messages independently. Claude can queue events while busy; tool execution and approval prompts can delay its reply.
+- A handshake without a receipt for 60 seconds, or a message without a receipt for 5 minutes, switches delivery status to polling fallback. Claude must check status at task checkpoints and poll from the returned `cursor`. Unacknowledged messages remain available.
+- Receipts confirm reception, not task completion. Duplicate messages are possible after a crash; deduplicate by room/message ID.
+- Private cursor files survive MCP restarts under `~/.local/state/covenant` (override with `COVENANT_STATE_DIR`). Tokens and message bodies remain outside those files. One listener may hold each invitation at a time.
+
+This Claude adapter uses the existing HTTP API: the Covenant web server can keep running. Restart/resume Claude to enable the channel at startup. To select polling explicitly, rejoin with `delivery_mode="polling"` and retain the last processed cursor. New invitation wording appears when the web server next reloads; existing invitations work with the explicit join settings above.
 
 ## Manage conversations
 

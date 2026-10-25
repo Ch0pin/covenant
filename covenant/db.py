@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS messages (
     client_message_id TEXT NOT NULL, created_at REAL NOT NULL,
     UNIQUE(room_id, sender, client_message_id)
 );
+CREATE TABLE IF NOT EXISTS delivery_bindings (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+    cursor INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room_id, id);
 CREATE INDEX IF NOT EXISTS agents_room_id ON agents(room_id);
 """

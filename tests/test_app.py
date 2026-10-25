@@ -362,3 +362,127 @@ def test_notification_matching_ignores_body_mentions_and_advances_past_them(setu
     second = client.get(f"/api/operator-notifications?after={first['next_cursor']}").json()
     assert [m["id"] for m in second["messages"]] == [wanted["id"]]
     assert not second["has_more"]
+
+
+def register_delivery(client, rid, invitation, session_id=None):
+    body = {"session_id": session_id or str(uuid4()), "connection_id": str(uuid4())}
+    response = client.post(f"/{rid}/join", headers=bearer(invitation), json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def delivery_get(client, rid, invitation, registration, **kwargs):
+    return client.get(f"/{rid}/delivery", headers=bearer(invitation), params={
+        "connection_id": registration["connection_id"], "timeout": 0, **kwargs})
+
+
+def test_delivery_registration_filters_targets_and_scopes_cursor(setup):
+    client, app, _, headers, rid, (alice, bob) = setup
+    old = send(client, rid, bob, "@alice Existing history").json()
+    joined = register_delivery(client, rid, alice)
+    binding = joined["delivery"]
+    assert binding["cursor"] == old["id"]
+    assert delivery_get(client, rid, alice, binding).json()["messages"] == []
+    direct = send(client, rid, bob, "@operator @alice Please review").json()
+    broadcast = send(client, rid, bob, "@everyone Shared update").json()
+    send(client, rid, alice, "@everyone Own post")
+    irrelevant = send(client, rid, bob, "@operator Only for human").json()
+    page = delivery_get(client, rid, alice, binding).json()
+    assert page["messages"] == [direct, broadcast]
+    assert page["next_cursor"] == irrelevant["id"]
+    # Polling alone never acknowledges delivery; the listener queues first.
+    repeated = delivery_get(client, rid, alice, binding).json()
+    assert repeated["messages"] == page["messages"]
+    assert repeated["next_cursor"] == page["next_cursor"]
+    ack = {"connection_id": binding["connection_id"], "cursor": page["next_cursor"]}
+    assert client.post(f"/{rid}/delivery/ack", headers=bearer(bob), json=ack).status_code == 409
+    assert client.post(f"/{rid}/delivery/ack", headers=bearer(alice), json=ack).json()["cursor"] == irrelevant["id"]
+    assert delivery_get(client, rid, alice, binding).json()["messages"] == []
+    assert client.post(f"/{rid}/delivery/ack", headers=bearer(alice), json={**ack, "cursor": 0}).json()["cursor"] == irrelevant["id"]
+    assert client.post(f"/{rid}/delivery/ack", headers=bearer(alice), json={**ack, "cursor": irrelevant["id"] + 1}).status_code == 422
+    assert "session_id" not in json.dumps(client.get(f"/api/rooms/{rid}").json())
+    assert "session_id" not in json.dumps(client.post(f"/{rid}/join", headers=bearer(bob)).json())
+
+
+def test_delivery_reconnect_preserves_pending_and_replaces_old_connection(setup):
+    client, app, settings, _, rid, (alice, bob) = setup
+    old = register_delivery(client, rid, alice)["delivery"]
+    pending = send(client, rid, bob, "@alice Catch up after reconnect").json()
+    new = register_delivery(client, rid, alice, old["session_id"])["delivery"]
+    assert old["connection_id"] != new["connection_id"]
+    assert new["cursor"] == old["cursor"]
+    assert delivery_get(client, rid, alice, old).status_code == 409
+    assert delivery_get(client, rid, alice, new).json()["messages"] == [pending]
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as restarted:
+        assert delivery_get(restarted, rid, alice, new).json()["messages"] == [pending]
+    # An ordinary client may explicitly switch back to polling with its same token.
+    plain = client.post(f"/{rid}/join", headers=bearer(alice), json={}).json()
+    assert plain["delivery"] == {"mode": "polling"}
+    assert pending in plain["messages"]
+    assert delivery_get(client, rid, alice, new).status_code == 409
+    assert send(client, rid, alice).status_code == 200
+
+
+@pytest.mark.parametrize("ending", ["revoke", "rotate", "archived", "delete", "replace"])
+def test_waiting_delivery_observes_access_lifecycle(setup, ending):
+    client, _, _, headers, rid, (alice, _) = setup
+    binding = register_delivery(client, rid, alice)["delivery"]
+    with ThreadPoolExecutor() as pool:
+        waiting = pool.submit(delivery_get, client, rid, alice, binding, timeout=3)
+        time.sleep(0.1)
+        assert not waiting.done()
+        if ending in {"revoke", "rotate"}:
+            client.post(f"/api/rooms/{rid}/agents/{alice['id']}/{ending}", headers=headers)
+        elif ending == "replace":
+            register_delivery(client, rid, alice)
+        else:
+            client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "archived"})
+        response = waiting.result(timeout=2)
+    if ending in {"revoke", "rotate"}:
+        assert response.status_code == 401
+    elif ending == "replace":
+        assert response.status_code == 409
+    else:
+        assert response.json()["room_status"] == "archived"
+        assert response.json()["messages"] == []
+        assert client.post(f"/{rid}/join", headers=bearer(alice), json={
+            "session_id": str(uuid4()), "connection_id": str(uuid4())}).status_code == 409
+        if ending == "delete":
+            assert client.delete(f"/api/rooms/{rid}", headers=headers).status_code == 200
+            assert delivery_get(client, rid, alice, binding).status_code == 401
+
+
+def test_paused_delivery_keeps_pending_messages_until_resume(setup):
+    client, _, _, headers, rid, (alice, bob) = setup
+    binding = register_delivery(client, rid, alice)["delivery"]
+    pending = send(client, rid, bob, "@alice Pending task").json()
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "paused"})
+    paused = delivery_get(client, rid, alice, binding).json()
+    assert paused["messages"] == [] and paused["next_cursor"] == binding["cursor"]
+    assert client.post(f"/api/rooms/{rid}/messages", headers=headers, json={
+        "text": "@alice Human instruction", "client_message_id": "pause-human"}).status_code == 200
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "active"})
+    assert delivery_get(client, rid, alice, binding).json()["messages"][0] == pending
+
+
+@pytest.mark.parametrize("body", [{"session_id": "not-a-uuid"}, {"session_id": str(uuid4())},
+                                   {"connection_id": str(uuid4())}, {"provider": "unknown"}])
+def test_registration_validation_keeps_existing_access(setup, body):
+    client, _, _, _, rid, (alice, _) = setup
+    assert client.post(f"/{rid}/join", headers=bearer(alice), json=body).status_code == 422
+    assert client.post(f"/{rid}/join", headers=bearer(alice)).status_code == 200
+
+
+def test_delivery_schema_upgrade_preserves_existing_data(setup):
+    client, app, _, _, rid, (alice, _) = setup
+    message = send(client, rid, alice).json()
+    with app.state.db.connect() as conn:
+        conn.execute("DROP TABLE delivery_bindings")  # Isolated pre-upgrade database.
+        before = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")]
+                  for table in ("rooms", "agents", "messages", "operator", "sessions")}
+    app.state.db.initialize()
+    app.state.db.initialize()  # Migration is repeatable.
+    with app.state.db.connect() as conn:
+        after = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")] for table in before}
+    assert before == after
+    assert client.get(f"/{rid}/messages?timeout=0", headers=bearer(alice)).json()["messages"] == [message]

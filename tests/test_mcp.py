@@ -77,7 +77,7 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room):
                 clients.append(session)
             alice, bob = clients
             tools = await alice.list_tools()
-            assert {tool.name for tool in tools.tools} == {"join_room", "send_message", "wait_for_messages"}
+            assert {tool.name for tool in tools.tools} == {"join_room", "send_message", "wait_for_messages", "delivery_status", "acknowledge_delivery"}
             error = await alice.call_tool("wait_for_messages", {"after": 0, "timeout": 0})
             assert error.is_error
             joined_a = result_data(await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"]}))
@@ -118,3 +118,171 @@ def test_mcp_rejects_invalid_connection_urls(url):
     from mcp.server.mcpserver.exceptions import ToolError
     with pytest.raises(ToolError):
         validate_room_url(url)
+
+
+def test_codex_bridge_receives_without_agent_polling(live_room, tmp_path):
+    url, tokens, db, rid = live_room
+    from websockets.asyncio.server import serve
+    sid = str(uuid4())
+    delivered = []
+
+    async def handler(ws):
+        async for raw in ws:
+            request = json.loads(raw)
+            method = request["method"]
+            if method == "initialized": continue
+            result = {}
+            if method == "thread/read":
+                result = {"thread": {"status": {"type": "active"}}}
+            elif method == "thread/turns/list":
+                result = {"data": [{"id": "busy-turn", "status": "inProgress"}]}
+            elif method == "turn/steer":
+                assert request["params"]["expectedTurnId"] == "busy-turn"
+                delivered.append(request["params"])
+                result = {"turnId": "busy-turn"}
+            else:
+                assert method == "initialize"
+            await ws.send(json.dumps({"id": request["id"], "result": result}))
+
+    async def scenario():
+        async with AsyncExitStack() as stack:
+            codex = await stack.enter_async_context(serve(handler, "127.0.0.1", 0))
+            endpoint = "ws://127.0.0.1:" + str(codex.sockets[0].getsockname()[1])
+            clients = []
+            for _ in range(2):
+                streams = await stack.enter_async_context(stdio_client(StdioServerParameters(
+                    command=sys.executable, args=["-m", "covenant.mcp_server"],
+                    env={"COVENANT_CODEX_REMOTE": endpoint})))
+                session = await stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=10))
+                await session.initialize()
+                clients.append(session)
+            alice, bob = clients
+            initial = result_data(await alice.call_tool("join_room", {
+                "room_url": url, "access_token": tokens["alice"], "session_id": sid}))
+            assert initial["delivery"]["mode"] == "codex"
+            assert initial["delivery"]["state"] == "listening"
+            await bob.call_tool("join_room", {"room_url": url, "access_token": tokens["bob"]})
+            sent = result_data(await bob.call_tool("send_message", {
+                "text": "@operator @alice Automatic delivery", "client_message_id": "push-1"}))
+            for _ in range(100):
+                status = result_data(await alice.call_tool("delivery_status", {}))
+                if status["cursor"] >= sent["id"]:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail(f"Listener did not deliver: {status}")
+            assert delivered[0]["threadId"] == sid
+            assert "Automatic delivery" in delivered[0]["input"][0]["text"]
+            assert tokens["alice"] not in delivered[0]["input"][0]["text"]
+            assert status["delivery_method"] == "steer"
+            # Rejoining preserves the acknowledgement and does not queue old history.
+            await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"], "session_id": sid})
+            await asyncio.sleep(0.15)
+            assert len(delivered) == 1
+            with db.connect() as conn:
+                conn.execute("UPDATE agents SET revoked=1 WHERE room_id=? AND handle='alice'", (rid,))
+            for _ in range(60):
+                status = result_data(await alice.call_tool("delivery_status", {}))
+                if status["state"] == "stopped":
+                    break
+                await asyncio.sleep(0.05)
+            assert status["state"] == "stopped" and "401" in status["last_error"]
+            assert len(delivered) == 1
+    asyncio.run(scenario())
+
+
+def test_new_bridge_preserves_polling_with_a_legacy_http_server(monkeypatch):
+    from covenant import mcp_server
+    from mcp.server.mcpserver.exceptions import ToolError
+    calls = []
+    def legacy_request(url, token, suffix, body=None):
+        calls.append(suffix)
+        return {"handle": "alice", "messages": [], "next_cursor": 0, "revision": 1}
+    monkeypatch.setattr(mcp_server, "request_json", legacy_request)
+    monkeypatch.setattr(mcp_server, "codex_endpoint", lambda: "ws://127.0.0.1:12345")
+    async def scenario():
+        server = mcp_server.create_mcp_server()
+        with pytest.raises(ToolError, match="use polling"):
+            await server.call_tool("join_room", {"room_url": "https://chat.example.com/" + str(uuid4()),
+                "access_token": "x" * 43, "session_id": str(uuid4())})
+        status = result_data(await server.call_tool("delivery_status", {}))
+        assert status == {"mode": "polling", "state": "joined"}
+        result = result_data(await server.call_tool("wait_for_messages", {"after": 0, "timeout": 0}))
+        assert result["messages"] == []
+        assert len(calls) == 2
+    asyncio.run(scenario())
+
+
+def test_claude_channel_stdio_receipts_restart_and_polling(live_room, tmp_path):
+    from mcp.client import NotificationBinding
+    from covenant.claude_delivery import ChannelParams
+    url, tokens, db, rid = live_room
+
+    async def scenario():
+        events = asyncio.Queue()
+        async def receive(params):
+            await events.put(params)
+        async def open_client(stack):
+            streams = await stack.enter_async_context(stdio_client(StdioServerParameters(
+                command=sys.executable, args=['-m', 'covenant.mcp_server'],
+                env={'COVENANT_STATE_DIR': str(tmp_path / 'state')})))
+            client = await stack.enter_async_context(ClientSession(*streams, read_timeout_seconds=10,
+                notification_bindings=[NotificationBinding(method='notifications/claude/channel',
+                    params_type=ChannelParams, handler=receive)]))
+            initialized = await client.initialize()
+            assert initialized.capabilities.experimental['claude/channel'] == {}
+            return client
+        async def post(mid, text):
+            from covenant.mcp_server import request_json
+            return await asyncio.to_thread(request_json, url, tokens['bob'], '/messages',
+                {'client_message_id': mid, 'text': text})
+        async def join_and_confirm(client):
+            joined = result_data(await client.call_tool('join_room', {
+                'room_url': url, 'access_token': tokens['alice'], 'delivery_mode': 'claude'}))
+            assert joined['delivery']['state'] == 'awaiting_confirmation'
+            event = await asyncio.wait_for(events.get(), 3)
+            assert event.meta['event'] == 'handshake'
+            ack = result_data(await client.call_tool('acknowledge_delivery', {'receipt': event.meta['receipt']}))
+            assert ack['channel_verified'] and ack['state'] == 'listening'
+            return ack
+        async with AsyncExitStack() as stack:
+            client = await open_client(stack)
+            await join_and_confirm(client)
+            sent = await post('channel-1', '@alice @operator From another agent')
+            event = await asyncio.wait_for(events.get(), 3)
+            assert event.meta['message_id'] == str(sent['id'])
+            assert 'From another agent' in event.content and tokens['alice'] not in event.content
+            status = result_data(await client.call_tool('delivery_status', {}))
+            assert status['cursor'] < sent['id']
+            result_data(await client.call_tool('acknowledge_delivery', {'receipt': event.meta['receipt']}))
+            # The existing send tool provides the response path back to the same room.
+            reply = result_data(await client.call_tool('send_message', {
+                'text': '@operator Received the channel message.', 'client_message_id': 'channel-reply'}))
+            assert reply['sender'] == 'alice'
+            pending = await post('channel-2', '@alice Preserve this across MCP restart')
+            pending_event = await asyncio.wait_for(events.get(), 3)
+            assert pending_event.meta['message_id'] == str(pending['id'])
+        # Full MCP process shutdown/restart; no model polling was required to receive.
+        async with AsyncExitStack() as stack:
+            client = await open_client(stack)
+            confirmed = await join_and_confirm(client)
+            assert confirmed['cursor'] < pending['id']
+            replay = await asyncio.wait_for(events.get(), 3)
+            assert replay.meta['message_id'] == str(pending['id'])
+            assert replay.meta['receipt'] != pending_event.meta['receipt']
+            wrong = await client.call_tool('acknowledge_delivery', {'receipt': pending_event.meta['receipt']})
+            assert wrong.is_error
+            # Explicit polling fallback remains usable with all unacknowledged messages.
+            saved = result_data(await client.call_tool('delivery_status', {}))['cursor']
+            joined = result_data(await client.call_tool('join_room', {
+                'room_url': url, 'access_token': tokens['alice'], 'delivery_mode': 'polling'}))
+            assert joined['delivery']['mode'] == 'polling'
+            received = result_data(await client.call_tool('wait_for_messages', {'after': saved, 'timeout': 0}))
+            assert any(m['id'] == pending['id'] for m in received['messages'])
+            await join_and_confirm(client)
+            event = await asyncio.wait_for(events.get(), 3)
+            with db.connect() as conn:
+                conn.execute("UPDATE agents SET revoked=1 WHERE room_id=? AND handle='alice'", (rid,))
+            revoked = await client.call_tool('acknowledge_delivery', {'receipt': event.meta['receipt']})
+            assert revoked.is_error and '401' in revoked.content[0].text
+    asyncio.run(scenario())

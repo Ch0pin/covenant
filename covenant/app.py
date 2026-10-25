@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import csrf_token, digest, hash_password, verify_password
@@ -53,6 +53,22 @@ class NewAgent(Input):
     @classmethod
     def normalize_handle(cls, value):
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class JoinRequest(Input):
+    session_id: UUID | None = None
+    connection_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def paired_registration(self):
+        if (self.session_id is None) != (self.connection_id is None):
+            raise ValueError("Supply both session_id and connection_id for Codex delivery")
+        return self
+
+
+class DeliveryAck(Input):
+    connection_id: UUID
+    cursor: int = Field(ge=0, le=2**63 - 1)
 
 
 class NewMessage(Input):
@@ -400,10 +416,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return result
 
     @app.post("/{room_id}/join")
-    async def join(room_id: UUID, request: Request):
+    async def join(room_id: UUID, request: Request, body: JoinRequest | None = None):
         rid, now = str(room_id), time.time()
+        body = body or JoinRequest()
         with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             identity = agent(conn, request, rid)
+            if body.session_id and room(conn, rid)["status"] == "archived":
+                raise HTTPException(409, "Restore this conversation before enabling delivery")
             conn.execute("UPDATE agents SET joined_at=COALESCE(joined_at,?),last_seen=? WHERE id=?",
                          (now, now, identity["id"]))
             if identity["joined_at"] is None:
@@ -411,6 +431,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = envelope(conn, rid, before=2**63 - 1)
             result["history_truncated"] = result.pop("has_more")
             result["handle"] = identity["handle"]
+            if body.session_id:
+                # Keep unqueued messages across reconnects. First registration starts
+                # after the history returned above, which the joining agent already reads.
+                conn.execute("""INSERT INTO delivery_bindings
+                    (agent_id,session_id,connection_id,cursor,updated_at) VALUES (?,?,?,?,?)
+                    ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id,
+                    connection_id=excluded.connection_id,updated_at=excluded.updated_at""",
+                    (identity["id"], str(body.session_id), str(body.connection_id), result["next_cursor"], now))
+                binding = conn.execute("SELECT cursor FROM delivery_bindings WHERE agent_id=?",
+                                       (identity["id"],)).fetchone()
+                result["delivery"] = {"mode": "codex", "session_id": str(body.session_id),
+                                      "connection_id": str(body.connection_id), "cursor": binding["cursor"]}
+            else:
+                # An explicit ordinary join switches this participant back to polling.
+                conn.execute("DELETE FROM delivery_bindings WHERE agent_id=?", (identity["id"],))
+                result["delivery"] = {"mode": "polling"}
         await notify(rid)
         return result
 
@@ -424,10 +460,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await notify(rid)
         return result
 
+    def delivery_binding(conn, identity, connection_id):
+        binding = conn.execute("SELECT * FROM delivery_bindings WHERE agent_id=?",
+                               (identity["id"],)).fetchone()
+        if not binding or binding["connection_id"] != str(connection_id):
+            raise HTTPException(409, "Delivery registration was replaced; rejoin this room")
+        return binding
+
+    @app.get("/{room_id}/delivery")
+    async def delivery_poll(room_id: UUID, request: Request, connection_id: UUID,
+                            revision: int | None = Query(None, ge=0),
+                            timeout: float = Query(25, ge=0, le=25)):
+        return await wait_for_changes(str(room_id), request, 0, revision, timeout, connection_id)
+
+    @app.post("/{room_id}/delivery/ack")
+    async def delivery_ack(room_id: UUID, request: Request, body: DeliveryAck):
+        rid = str(room_id)
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            identity = agent(conn, request, rid)
+            binding = delivery_binding(conn, identity, body.connection_id)
+            latest = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=?", (rid,)).fetchone()[0]
+            if body.cursor > latest:
+                raise HTTPException(422, "Cursor exceeds the room history")
+            cursor = max(binding["cursor"], body.cursor)
+            conn.execute("UPDATE delivery_bindings SET cursor=?,updated_at=? WHERE agent_id=?",
+                         (cursor, time.time(), identity["id"]))
+        return {"cursor": cursor}
+
     @app.get("/{room_id}/messages")
     async def poll(room_id: UUID, request: Request, after: int = Query(0, ge=0),
                    revision: int | None = Query(None, ge=0), timeout: float = Query(25, ge=0, le=25)):
-        rid = str(room_id)
+        return await wait_for_changes(str(room_id), request, after, revision, timeout)
+
+    async def wait_for_changes(rid, request, after, revision, timeout, connection_id=None):
         with db.connect() as conn:
             identity = agent(conn, request, rid)
             conn.execute("UPDATE agents SET last_seen=? WHERE id=?", (time.time(), identity["id"]))
@@ -436,10 +502,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with conditions[rid]:
             while True:
                 with db.connect() as conn:
-                    agent(conn, request, rid)  # Recheck revocation while a request is waiting.
+                    identity = agent(conn, request, rid)  # Recheck access on every wake.
+                    if connection_id is not None:
+                        binding = delivery_binding(conn, identity, connection_id)
+                        after = binding["cursor"]
                     result = envelope(conn, rid, after)
+                    if connection_id is not None:
+                        scanned = bool(result["messages"])
+                        if result["room_status"] != "active":
+                            result.update(messages=[], next_cursor=after, has_more=False)
+                        else:
+                            result["messages"] = [m for m in result["messages"]
+                                if m["sender"] != identity["handle"]
+                                and ({identity["handle"], "everyone"} & set(m["targets"]))]
+                            if scanned:
+                                return result  # Advance past messages addressed elsewhere.
                 remaining = deadline - asyncio.get_running_loop().time()
-                if result["messages"] or result["revision"] != baseline or result["room_status"] == "archived" or remaining <= 0:
+                if (result["messages"] or result["revision"] != baseline
+                        or result["room_status"] == "archived" or remaining <= 0
+                        or (connection_id is not None and result["room_status"] == "paused")):
                     return result
                 if await request.is_disconnected():
                     return Response(status_code=204)
