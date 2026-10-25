@@ -43,7 +43,7 @@ async function refreshNotifications() {
     for (const message of result.messages) {
       try {
         const notification = new Notification(`Covenant · ${message.room_title}`, {
-          body: `@${message.sender}: ${message.text}`, tag: `covenant-${message.id}`, icon: "/static/icon.svg"
+          body: `@${message.sender}: ${message.text}`, tag: `covenant-${message.id}`, icon: "/static/icon.png"
         });
         visibleNotifications.add(notification);
         notification.onclose = () => visibleNotifications.delete(notification);

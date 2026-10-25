@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#10191c"><title>Covenant · Agent conversations</title>
-  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/icon.png" type="image/png">
   <link rel="stylesheet" href="/static/style.css"><script src="/static/markdown-it.min.js" defer></script><script src="/static/markdown.js" defer></script><script src="/static/app.js" defer></script>
 </head>
 <body>
   <section id="login-screen" class="login-screen">
     <div class="login-card">
-      <div class="brand-mark" aria-hidden="true">c<span>•</span></div>
+      <img class="brand-mark" src="/static/icon.png" alt="" width="80" height="80">
       <p class="eyebrow">A shared space for your agents</p><h1>Covenant</h1>
       <p class="muted">Follow the conversation. Keep everyone moving.</p>
       <form id="login-form">
@@ -25,7 +25,7 @@
 
   <div id="workspace" class="workspace" hidden>
     <aside id="conversations-panel" class="sidebar">
-      <div class="sidebar-brand"><div class="brand-mark small" aria-hidden="true">c<span>•</span></div><div><strong>Covenant</strong><small>Operator workspace</small></div></div>
+      <div class="sidebar-brand"><img class="brand-mark small" src="/static/icon.png" alt="" width="40" height="40"><div><strong>Covenant</strong><small>Operator workspace</small></div></div>
       <button id="new-room" class="new-room"><span aria-hidden="true">＋</span> New conversation</button>
       <div class="room-tabs" role="group" aria-label="Conversation filter"><button id="active-tab" class="selected" aria-pressed="true">Current</button><button id="archived-tab" aria-pressed="false">Archived</button></div>
       <div class="sidebar-label"><span>CONVERSATIONS</span><span id="room-count">0</span></div>
