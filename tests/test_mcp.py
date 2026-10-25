@@ -63,7 +63,7 @@ def result_data(result):
     return result.structured_content or json.loads(result.content[0].text)
 
 
-def test_two_real_stdio_clients_exchange_and_revoke(live_room):
+def test_two_real_stdio_clients_exchange_and_revoke(live_room, tmp_path):
     url, tokens, db, rid = live_room
 
     async def scenario():
@@ -77,7 +77,8 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room):
                 clients.append(session)
             alice, bob = clients
             tools = await alice.list_tools()
-            assert {tool.name for tool in tools.tools} == {"join_room", "send_message", "wait_for_messages", "delivery_status", "acknowledge_delivery"}
+            assert {tool.name for tool in tools.tools} == {"join_room", "send_message", "wait_for_messages", "delivery_status", "acknowledge_delivery",
+                "read_history", "acquire_file_locks", "renew_file_locks", "release_file_locks", "list_file_locks"}
             error = await alice.call_tool("wait_for_messages", {"after": 0, "timeout": 0})
             assert error.is_error
             joined_a = result_data(await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"]}))
@@ -105,6 +106,33 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room):
             assert wrong.is_error
             empty = result_data(await alice.call_tool("wait_for_messages", {"after": reply["id"], "timeout": 0.1}))
             assert empty["messages"] == []
+            noise = result_data(await alice.call_tool("send_message", {
+                "text": "@operator Only for the operator", "client_message_id": "mcp-noise"}))
+            filtered = result_data(await bob.call_tool("wait_for_messages", {"after": reply["id"], "timeout": 0}))
+            assert filtered["messages"] == [] and filtered["next_cursor"] == noise["id"]
+            shared = result_data(await bob.call_tool("read_history", {"scope": "all", "limit": 1}))
+            assert shared["messages"] == [noise] and "next_cursor" not in shared
+            inbox = result_data(await bob.call_tool("join_room", {
+                "room_url": url, "access_token": tokens["bob"], "history_limit": 0}))
+            assert inbox["messages"] == [] and inbox["next_cursor"] == noise["id"]
+            file = tmp_path / "shared.py"
+            file.write_text("original")
+            alias = tmp_path / "alias.py"
+            alias.symlink_to(file)
+            reserved = result_data(await alice.call_tool("acquire_file_locks", {"paths": [str(alias)]}))
+            assert reserved["acquired"] and reserved["paths"] == [str(file.resolve())]
+            denied = result_data(await bob.call_tool("acquire_file_locks", {"paths": [str(file)]}))
+            assert not denied["acquired"]
+            listing = result_data(await alice.call_tool("list_file_locks", {}))
+            assert listing["locks"][0]["lock_id"] == reserved["lock_id"]
+            renewed = result_data(await alice.call_tool("renew_file_locks", {"lock_id": reserved["lock_id"]}))
+            assert renewed["renewed"]
+            released = result_data(await alice.call_tool("release_file_locks", {"lock_id": reserved["lock_id"]}))
+            assert released["released"] == 1
+            assert result_data(await bob.call_tool("acquire_file_locks", {"paths": [str(file)]}))["acquired"]
+            assert file.read_text() == "original"  # Coordination never edits the reserved file.
+            invalid = await alice.call_tool("acquire_file_locks", {"paths": ["relative.py"]})
+            assert invalid.is_error
             with db.connect() as conn:
                 conn.execute("UPDATE agents SET revoked=1 WHERE room_id=? AND handle='alice'", (rid,))
             revoked = await alice.call_tool("wait_for_messages", {"after": reply["id"], "timeout": 0})

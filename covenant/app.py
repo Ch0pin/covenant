@@ -22,6 +22,7 @@ from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
 from .db import Database
 from .instructions import connection_instructions
+from .file_locks import register_file_lock_routes
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "covenant_session"
@@ -56,6 +57,8 @@ class NewAgent(Input):
 
 
 class JoinRequest(Input):
+    history_limit: int = Field(default=20, ge=0, le=50)
+    history_scope: Literal["inbox", "all"] = "inbox"
     session_id: UUID | None = None
     connection_id: UUID | None = None
 
@@ -197,6 +200,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "has_more": more, "revision": current["revision"],
                 "participants": [{"handle": "operator", "kind": "operator"}] + participants(conn, room_id)}
 
+    def relevant(message, handle):
+        return message["sender"] != handle and bool({handle, "everyone"} & set(message["targets"]))
+
+    def history(conn, rid, handle, limit, scope, before=None):
+        # Filtering happens before LIMIT so unrelated chatter cannot hide relevant history.
+        conn.create_function("addressed_to", 2, lambda sender, text:
+            sender != handle and bool({handle, "everyone"} & set(message_targets(text)[0])))
+        query = "SELECT * FROM messages WHERE room_id=? AND id<?"
+        if scope == "inbox":
+            query += " AND addressed_to(sender,text)"
+        rows = list(conn.execute(query + " ORDER BY id DESC LIMIT ?",
+                    (rid, before if before is not None else 2**63 - 1, limit + 1)))
+        more = len(rows) > limit
+        messages = [message_dict(row) for row in reversed(rows[:limit])]
+        return {"messages": messages, "has_more": more, "scope": scope,
+                "next_before": messages[0]["id"] if messages else None}
+
+    @app.get("/{room_id}/history")
+    async def agent_history(room_id: UUID, request: Request,
+                            limit: int = Query(20, ge=1, le=50),
+                            scope: Literal["inbox", "all"] = "inbox",
+                            before: int | None = Query(None, ge=1, le=2**63 - 1)):
+        with db.connect() as conn:
+            identity = agent(conn, request, str(room_id))
+            return history(conn, str(room_id), identity["handle"], limit, scope, before)
+
     def insert_message(conn, room_id, sender, body, is_operator=False):
         current = room(conn, room_id)
         old = conn.execute("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_message_id=?",
@@ -331,6 +360,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with db.connect() as conn:
             room(conn, rid)
             conn.execute("UPDATE rooms SET status=? WHERE id=?", (body.status, rid))
+            if body.status == "archived":
+                conn.execute("DELETE FROM file_locks WHERE agent_id IN (SELECT id FROM agents WHERE room_id=?)", (rid,))
             bump(conn, rid)
             result = room(conn, rid)
         await notify(rid)
@@ -379,6 +410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not conn.execute("UPDATE agents SET revoked=1 WHERE id=? AND room_id=?",
                                 (str(agent_id), rid)).rowcount:
                 raise HTTPException(404, "Agent not found")
+            conn.execute("DELETE FROM file_locks WHERE agent_id=?", (str(agent_id),))
             bump(conn, rid)
         await notify(rid)
         return {"ok": True}
@@ -393,6 +425,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             row = conn.execute("SELECT handle FROM agents WHERE id=? AND room_id=?", (str(agent_id), rid)).fetchone()
             if not row:
                 raise HTTPException(404, "Agent not found")
+            conn.execute("DELETE FROM file_locks WHERE agent_id=?", (str(agent_id),))
             conn.execute("UPDATE agents SET token_hash=?, revoked=0, joined_at=NULL, last_seen=NULL WHERE id=?",
                          (digest(token), str(agent_id)))
             bump(conn, rid)
@@ -428,9 +461,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                          (now, now, identity["id"]))
             if identity["joined_at"] is None:
                 bump(conn, rid)
-            result = envelope(conn, rid, before=2**63 - 1)
-            result["history_truncated"] = result.pop("has_more")
-            result["handle"] = identity["handle"]
+            latest = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=?", (rid,)).fetchone()[0]
+            result = envelope(conn, rid, after=latest)
+            catch_up = history(conn, rid, identity["handle"], body.history_limit, body.history_scope)
+            result.pop("has_more")
+            result.update(messages=catch_up["messages"], history_truncated=catch_up["has_more"],
+                          history_scope=body.history_scope, next_before=catch_up["next_before"],
+                          handle=identity["handle"])
+            # next_cursor remains the room watermark, independently of history selection.
+            # Reconnecting agents must retain their previous processed cursor.
             if body.session_id:
                 # Keep unqueued messages across reconnects. First registration starts
                 # after the history returned above, which the joining agent already reads.
@@ -507,16 +546,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         binding = delivery_binding(conn, identity, connection_id)
                         after = binding["cursor"]
                     result = envelope(conn, rid, after)
-                    if connection_id is not None:
-                        scanned = bool(result["messages"])
-                        if result["room_status"] != "active":
-                            result.update(messages=[], next_cursor=after, has_more=False)
-                        else:
-                            result["messages"] = [m for m in result["messages"]
-                                if m["sender"] != identity["handle"]
-                                and ({identity["handle"], "everyone"} & set(m["targets"]))]
-                            if scanned:
-                                return result  # Advance past messages addressed elsewhere.
+                    scanned = bool(result["messages"])
+                    if connection_id is not None and result["room_status"] != "active":
+                        result.update(messages=[], next_cursor=after, has_more=False)
+                    else:
+                        result["messages"] = [m for m in result["messages"] if relevant(m, identity["handle"])]
+                        if scanned:
+                            return result  # Empty filtered pages still advance the scan cursor.
                 remaining = deadline - asyncio.get_running_loop().time()
                 if (result["messages"] or result["revision"] != baseline
                         or result["room_status"] == "archived" or remaining <= 0
@@ -528,6 +564,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await asyncio.wait_for(conditions[rid].wait(), min(remaining, 1.0))
                 except TimeoutError:
                     pass
+
+    register_file_lock_routes(app, db, agent, room)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

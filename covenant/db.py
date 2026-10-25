@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS delivery_bindings (
     session_id TEXT NOT NULL, connection_id TEXT NOT NULL,
     cursor INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS file_locks (
+    path TEXT PRIMARY KEY, lock_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS file_locks_lease ON file_locks(lock_id);
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room_id, id);
 CREATE INDEX IF NOT EXISTS agents_room_id ON agents(room_id);
 """

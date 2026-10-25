@@ -150,21 +150,23 @@ def test_rotation_invalidates_old_token_and_preserves_identity(setup):
     renewed = client.post(f"/api/rooms/{rid}/agents/{alice['id']}/rotate", headers=headers).json()
     assert client.post(f"/{rid}/join", headers=bearer(alice)).status_code == 401
     result = client.post(f"/{rid}/join", headers=bearer(renewed)).json()
-    assert result["handle"] == "alice" and result["messages"][0]["sender"] == "alice"
+    assert result["handle"] == "alice" and result["messages"] == []
+    history = client.get(f"/{rid}/history?scope=all", headers=bearer(renewed)).json()
+    assert history["messages"][0]["sender"] == "alice"
 
 
 def test_history_pagination_reconnect_and_persistence(setup):
     client, app, settings, headers, rid, (alice, _) = setup
     with app.state.db.connect() as conn:
         conn.executemany("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
-                         [(rid, "alice", "everyone", f"@everyone {i}", str(i), time.time()) for i in range(205)])
+                         [(rid, "bob", "everyone", f"@everyone {i}", str(i), time.time()) for i in range(205)])
     page1 = client.get(f"/{rid}/messages?after=0&timeout=0", headers=bearer(alice)).json()
     page2 = client.get(f"/{rid}/messages?after={page1['next_cursor']}&timeout=0", headers=bearer(alice)).json()
     page3 = client.get(f"/{rid}/messages?after={page2['next_cursor']}&timeout=0", headers=bearer(alice)).json()
     assert [len(p["messages"]) for p in (page1, page2, page3)] == [100, 100, 5]
     assert page1["has_more"] and page2["has_more"] and not page3["has_more"]
     joined = client.post(f"/{rid}/join", headers=bearer(alice)).json()
-    assert len(joined["messages"]) == 100 and joined["history_truncated"]
+    assert len(joined["messages"]) == 20 and joined["history_truncated"]
     assert joined["next_cursor"] == page3["next_cursor"]
     older = client.get(f"/api/rooms/{rid}/messages?before={joined['messages'][0]['id']}").json()
     assert len(older["messages"]) == 100 and older["has_more"]
@@ -272,7 +274,7 @@ def test_delete_archived_room_removes_history_and_access_only_for_that_room(setu
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     with TestClient(create_app(settings), base_url=settings.public_base_url) as restarted:
         assert restarted.post(f"/{rid}/join", headers=bearer(alice)).status_code == 401
-        remaining = restarted.post(f"/{other}/join", headers=bearer(other_agent)).json()
+        remaining = restarted.post(f"/{other}/join", headers=bearer(other_agent), json={"history_scope": "all"}).json()
         assert remaining["room"]["title"] == "Keep me"
         assert len(remaining["messages"]) == 1
 
@@ -474,8 +476,8 @@ def test_registration_validation_keeps_existing_access(setup, body):
 
 
 def test_delivery_schema_upgrade_preserves_existing_data(setup):
-    client, app, _, _, rid, (alice, _) = setup
-    message = send(client, rid, alice).json()
+    client, app, _, _, rid, (alice, bob) = setup
+    message = send(client, rid, bob).json()
     with app.state.db.connect() as conn:
         conn.execute("DROP TABLE delivery_bindings")  # Isolated pre-upgrade database.
         before = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")]

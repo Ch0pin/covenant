@@ -1,6 +1,8 @@
 """Session-local stdio MCP adapter for Covenant's authenticated HTTP API."""
 import asyncio
 import json
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from urllib.error import HTTPError, URLError
@@ -50,9 +52,9 @@ def request_json(room_url: str, token: str, suffix: str, body=None):
     except HTTPError as exc:
         details = {401: "Agent access is invalid or revoked. Ask the operator for a fresh invitation.",
                    403: "The server rejected this request.",
-                   404: "Conversation not found. Check the room URL.",
-                   409: "The room is paused/archived, or this message ID was used for different text.",
-                   422: "Invalid message or recipient. Use a current @handle, @operator, or @everyone.",
+                   404: "Conversation or endpoint not found. Check the room URL and whether the server needs upgrading.",
+                   409: "The room is paused/archived, a registration changed, or this message ID was used for different text.",
+                   422: "Invalid request. Check tool arguments, recipient handles, and allowed limits.",
                    429: "Request limit reached. Wait before retrying."}
         if 300 <= exc.code < 400:
             detail = "Redirect refused. Use the current room URL supplied by the operator."
@@ -90,6 +92,12 @@ def create_mcp_server():
         "While delivery is listening, manual polling is unnecessary. "
         "If Claude reports fallback, call wait_for_messages from its saved cursor. "
         "If Codex delivery retries or stops, rejoin without session_id and poll from your last processed cursor. "
+        "Inbox delivery includes only messages addressed to you or everyone, excluding your own posts. "
+        "Use read_history(scope=all) for wider context; history cursors never replace the live inbox cursor. "
+        "Broadcast shared decisions and blockers to @everyone. Before editing shared files, acquire_file_locks "
+        "for every affected path, edit only after acquired=true, renew before expiry and release after finishing. "
+        "On conflict work elsewhere; on expiry or renewal failure stop editing and reacquire, then reread files. "
+        "These are cooperative leases: direct filesystem writes bypass them. "
         "Acknowledge operator requests briefly before lengthy work. Respect room pause/archive status. Tokens stay private."),
         log_level="WARNING", lifespan=lifespan)
     connection = None
@@ -101,10 +109,13 @@ def create_mcp_server():
         access_token: Annotated[str, Field(min_length=32, max_length=256)],
         session_id: UUID | None = None,
         delivery_mode: Literal["polling", "codex", "claude"] | None = None,
+        history_limit: Annotated[int, Field(ge=0, le=50)] = 20,
+        history_scope: Literal["inbox", "all"] = "inbox",
         ctx: Context | None = None,
     ) -> dict:
         """Join with the room URL and agent token from the invitation. Returns identity,
-        participants, recent history, next_cursor and revision. One connection per MCP
+        participants, up to history_limit recent inbox messages, next_cursor and revision.
+        Use history_limit=0 to skip catch-up or history_scope="all" for shared history. One connection per MCP
         process; rejoin after a process restart. Preserve a saved cursor on reconnect.
         For Codex background delivery, obtain your own ID with printenv CODEX_THREAD_ID
         and pass session_id. Claude Code: pass delivery_mode="claude" after enabling
@@ -125,6 +136,9 @@ def create_mcp_server():
             raise ToolError("session_id is only used with Codex delivery. Omit it for Claude or polling.")
         endpoint = codex_endpoint() if mode == "codex" else None
         registration = {"session_id": str(session_id), "connection_id": str(uuid4())} if mode == "codex" else {}
+        # Default joins remain compatible with older servers; optional history needs the upgrade.
+        if history_limit != 20 or history_scope != "inbox":
+            registration.update(history_limit=history_limit, history_scope=history_scope)
         async with join_lock:
             result = await asyncio.to_thread(request_json, url, access_token, "/join", registration)
             if delivery:
@@ -219,7 +233,9 @@ def create_mcp_server():
         revision: Annotated[int | None, Field(ge=0)] = None,
         timeout: Annotated[float, Field(ge=0, le=25)] = 25,
     ) -> dict:
-        """Wait up to 25 seconds for shared room messages or status changes. Pass your
+        """Wait up to 25 seconds for messages addressed to you/@everyone or status changes.
+        Own posts are excluded. Empty filtered pages can advance next_cursor; follow
+        has_more until false. Use read_history for explicit broader context. Pass your
         saved next_cursor as after and your saved revision. Save returned cursors only
         after processing. Repeat even on an empty response; use timeout=0 to read now.
         While paused, stop starting room-driven work and keep polling. Stop on archived.
@@ -230,6 +246,79 @@ def create_mcp_server():
         if revision is not None:
             params["revision"] = revision
         return await asyncio.to_thread(request_json, url, token, "/messages?" + urlencode(params))
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
+    async def read_history(
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        scope: Literal["inbox", "all"] = "inbox",
+        before: Annotated[int | None, Field(ge=1, le=2**63 - 1)] = None,
+    ) -> dict:
+        """Read bounded history, oldest first within the selected recent page. Choose
+        scope="all" explicitly to read conversations between other participants.
+        Use next_before to fetch older pages when has_more is true. This is catch-up
+        context only: NEVER replace your live inbox cursor with a history position.
+        """
+        url, token = current_connection()
+        params = {"limit": limit, "scope": scope}
+        if before is not None:
+            params["before"] = before
+        return await asyncio.to_thread(request_json, url, token, "/history?" + urlencode(params))
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=False))
+    async def acquire_file_locks(
+        paths: Annotated[list[str], Field(min_length=1, max_length=50)],
+        lease_seconds: Annotated[int, Field(ge=30, le=3600)] = 300,
+    ) -> dict:
+        """Reserve all shared files you will edit as one atomic lease. Supply absolute
+        paths on this MCP host; symlinks resolve locally. All agents must use the same
+        canonical paths and Covenant server. Edit only if acquired=true. On conflict,
+        wait or work elsewhere; there is no partial acquisition. Save lock_id, renew
+        before expires_at, release when done. After reacquiring, reread files first.
+        Leases are cooperative: ordinary shell/editor writes can bypass them.
+        If a response is lost, list_file_locks shows your lease IDs for recovery.
+        """
+        url, token = current_connection()
+        canonical = []
+        for value in paths:
+            path = Path(value)
+            if not path.is_absolute():
+                raise ToolError("Supply absolute file paths from the shared checkout.")
+            try:
+                path = path.resolve()
+                if path.is_dir():
+                    raise ToolError("Reserve individual files, including each rename source and destination.")
+                canonical.append(os.path.normcase(str(path)))
+            except (OSError, RuntimeError, ValueError):
+                raise ToolError("Cannot resolve a file path on the MCP host.") from None
+        return await asyncio.to_thread(request_json, url, token, "/file-locks/acquire",
+                                       {"paths": canonical, "lease_seconds": lease_seconds})
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False))
+    async def renew_file_locks(
+        lock_id: UUID,
+        lease_seconds: Annotated[int, Field(ge=30, le=3600)] = 300,
+    ) -> dict:
+        """Extend an owned, unexpired lease for all its files. Renew before expires_at.
+        On renewed=false or an uncertain renewal, stop edits until ownership is
+        established. Expired leases cannot be revived; acquire again and reread files.
+        """
+        url, token = current_connection()
+        return await asyncio.to_thread(request_json, url, token, "/file-locks/renew",
+                                       {"lock_id": str(lock_id), "lease_seconds": lease_seconds})
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
+    async def release_file_locks(lock_id: UUID) -> dict:
+        """Release your lease after all edits and write-producing commands finish.
+        Repeating release is safe; an old ID cannot release a newer lease.
+        """
+        url, token = current_connection()
+        return await asyncio.to_thread(request_json, url, token, "/file-locks/release", {"lock_id": str(lock_id)})
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
+    async def list_file_locks() -> dict:
+        """List active file reservations in this room, with your lease IDs for recovery."""
+        url, token = current_connection()
+        return await asyncio.to_thread(request_json, url, token, "/file-locks")
 
     return server
 

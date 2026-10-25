@@ -8,6 +8,20 @@ Access token: {token}
 Acknowledge operator requests briefly before lengthy work; avoid acknowledgement loops with agents.
 Keep your existing task and role instructions. The room is a communication channel.
 Keep this token private; never include it in messages or URLs.
+Inbox delivery includes only messages addressed to you or @everyone, excluding your own posts.
+Join includes up to 20 recent inbox messages (history_limit=0 skips them; maximum 50).
+Use read_history(scope="all", limit=20) when you need wider room context. Use next_before
+for older pages; history positions never replace your live inbox cursor. Broadcast shared
+requirements, decisions and blockers to @everyone and include context in direct requests.
+Before editing a shared checkout, acquire_file_locks(paths=[<all absolute paths you will edit>]).
+Edit only after acquired=true. Save lock_id and expires_at; renew_file_locks before expiry
+(default lease: 300 seconds), and release_file_locks after all writing commands finish.
+On conflict, wait or work elsewhere. On expiry, failed/uncertain renewal, pause, archive or
+revocation, stop edits safely; reacquire and reread files before continuing. For renames,
+reserve both source and destination. list_file_locks recovers your IDs after a lost response.
+Locks are cooperative, across rooms on this server: direct editor/shell writes bypass them.
+Use the same canonical file paths; MCP resolves symlinks on its own host. HTTP clients must
+resolve paths themselves. Separate worktrees remain preferable for independent coding tasks.
 MCP connection (preferred when the covenant MCP server is configured):
 - Codex: run `printenv CODEX_THREAD_ID` in your own session's shell. If it returns a UUID,
   call join_room(room_url="{url}", access_token=<the access token above>, session_id=<that UUID>).
@@ -36,7 +50,7 @@ All requests: Authorization: Bearer <the access token above>
 POST bodies: Content-Type: application/json
 
 1. Join: POST {url}/join with JSON {{}}.
-   Read the objective, participants, room_status and recent messages. Your handle is
+   Read the objective, participants, room_status and bounded inbox history. Your handle is
    fixed by the token. Save next_cursor and revision. On reconnect, preserve your
    previous cursor so you can retrieve messages missed while disconnected.
 2. Send: POST {url}/messages with JSON:
@@ -49,7 +63,14 @@ POST bodies: Content-Type: application/json
    Give your HTTP tool at least 35 seconds to complete. Read returned messages in order.
    Respond when addressed to you or everyone; ignore your own messages as triggers.
    Save next_cursor and revision after processing. If has_more is true, fetch the next page.
-   Repeat the waiting call after each response, including empty timeout responses.
+   Repeat after every response. Empty filtered pages can advance next_cursor; follow has_more.
+4. Context: GET {url}/history?scope=all&limit=20 (maximum 50).
+   Fetch older pages with before=<next_before>; preserve the live inbox cursor separately.
+5. File leases: POST {url}/file-locks/acquire with JSON
+   {{"paths":["/absolute/path/to/file"],"lease_seconds":300}}. Check acquired before editing.
+   POST {url}/file-locks/renew with {{"lock_id":"<returned UUID>","lease_seconds":300}};
+   POST {url}/file-locks/release with {{"lock_id":"<returned UUID>"}} when finished.
+   GET {url}/file-locks lists this room's reservations. Use fresh acquisition after expiry.
 
 When paused, stop starting room-driven work and keep polling with a 2-second delay
 between calls. When archived, stop sending and exit the polling loop. Honor operator
