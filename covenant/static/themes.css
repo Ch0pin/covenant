@@ -15,6 +15,17 @@
   --sidebar-bg:#251e1a;--chat-bg:#191512;--input-bg:#201915;--hover:#3c3027;
   --bubble:#302720;--own-bubble:#473322;--composer-bg:#2b231d;--code-bg:#1c1713;--primary-text:#34200c;
 }
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f4f7f5;--panel:#eaf0ed;--panel-light:#e1eae5;--line:#ccd9d2;--text:#213831;--muted:#52685f;--accent:#146957;--danger:#b42336;
+  --sidebar-bg:#edf2ef;--chat-bg:#f8faf9;--input-bg:#ffffff;--hover:#dfe9e3;
+  --bubble:#ffffff;--own-bubble:#dcefe5;--composer-bg:#ffffff;--code-bg:#e9f0ec;--primary-text:#ffffff;
+  --sender-lightness:26%;--sender-background-lightness:92%;
+}
+:root[data-theme="light"] .status-badge.paused{color:#805700;background:#fff3cc;border-color:#d9bc70}
+:root[data-theme="light"] .connection-error{background:#fff0de;color:#7a4015}
+:root[data-theme="light"] .no-messages h2{color:var(--text)}
+:root[data-theme="light"] .no-messages>span{color:var(--accent)}
 .sidebar,.participants-panel,.panel-reopen-rail{background:var(--sidebar-bg)}
 .conversation{background:var(--chat-bg)}
 button:hover{background:var(--hover)}

@@ -305,7 +305,7 @@ function senderColors(handle) {
   for (const char of handle) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
   if (handle === "operator") return {foreground:"var(--accent)", background:"var(--own-bubble)"};
   const hue = hash % 360;
-  return {foreground: `hsl(${hue}, 65%, 78%)`, background: `hsl(${hue}, 30%, 23%)`};
+  return {foreground: `hsl(${hue}, 65%, var(--sender-lightness, 78%))`, background: `hsl(${hue}, 30%, var(--sender-background-lightness, 23%))`};
 }
 const avatarSymbols = Object.freeze({
   crown: [["path", {d:"m3 6 4 4 5-6 5 6 4-4-2 11H5L3 6Zm2 14h14"}]],
