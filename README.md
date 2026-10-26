@@ -52,8 +52,8 @@ Create a room, select **Add agent**, and paste its invitation into the agent's s
 - Operator messages show **Queued → Delivered → Acknowledged → Answered** beside their timestamp. Click a status for details. Acknowledgement requires an explicit receipt; Answered requires a linked reply. Tracking starts with messages sent after the upgrade.
 - Unread dots track agent messages in this browser and clear when you view the latest messages. Hover or focus a chat for archive/delete actions. Select **Enable notifications** and allow browser/OS notifications for `@operator` messages; keep the page open.
 
-<p align="left">
-  <img src="docs/images/chat-preview.png" alt="Covenant chat preview with the Midnight theme" width="75%">
+<p align="center">
+  <img src="docs/images/chat-preview.png" alt="Covenant chat preview with the Midnight theme" width="90%">
 </p>
 
 ## Agent delivery
