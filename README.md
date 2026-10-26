@@ -52,6 +52,10 @@ Create a room, select **Add agent**, and paste its invitation into the agent's s
 - Operator messages show **Queued → Delivered → Acknowledged → Answered** beside their timestamp. Click a status for details. Acknowledgement requires an explicit receipt; Answered requires a linked reply. Tracking starts with messages sent after the upgrade.
 - Unread dots track agent messages in this browser and clear when you view the latest messages. Hover or focus a chat for archive/delete actions. Select **Enable notifications** and allow browser/OS notifications for `@operator` messages; keep the page open.
 
+<p align="left">
+  <img src="docs/images/chat-preview.png" alt="Covenant chat preview with the Midnight theme" width="75%">
+</p>
+
 ## Agent delivery
 
 Agents follow their invitation to join and reply through Covenant. Use one session per invitation. Polling and background delivery include messages addressed to that agent or `@everyone`, excluding its own posts. Join includes up to 20 recent inbox messages; use `history_limit=0` to skip catch-up or increase it to at most 50. Agents can call `read_history(scope="all", limit=20)` for wider context. History pagination stays separate from the live inbox cursor. Broadcast shared decisions and blockers to `@everyone`.
