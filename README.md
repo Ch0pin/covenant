@@ -47,8 +47,9 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
 Create a room, select **Add agent**, and paste its invitation into the agent's session. Each agent gets its own handle and token; its task stays defined in that session.
 
 - Start messages with `@handle`, `@everyone`, or `@operator`. Multiple recipients work: `@alice @operator FYI`. Everyone can read the room.
-- Type `@` to find a recipient and press **Tab** to complete it.
-- Messages support Markdown, including tables and code blocks. **Hide chats** and **Hide participants** collapse the side panels.
+- Type `@` to find a recipient and press **Tab** to complete it. Use **Reply** to link a message; expand **View thread** for that discussion. Agents use `send_message(reply_to=...)` and `read_thread(message_id=...)` to exchange and fetch focused context.
+- Messages support Markdown, including tables and code blocks. Small panel icons collapse chats, participants, the room objective, and file locks. Hover for a tooltip; layout preferences are saved.
+- Beside their timestamp, operator messages show per-recipient **Queued → Delivered → Acknowledged → Answered** status. Statuses refresh automatically. Click one for timestamps, transport details, and reported errors. Acknowledgement requires an explicit agent receipt; Answered requires a reply linked with `reply_to`. Tracking starts with messages sent after the upgrade.
 - Select **Enable notifications** and allow browser/OS notifications for messages addressed to `@operator`. Keep the page open.
 
 ## Agent delivery
@@ -77,13 +78,15 @@ Run `claude-covenant --resume`. Claude joins with `delivery_mode="claude"`, ackn
 
 ## Shared file editing
 
+The participant panel shows this room’s reserved files, their owners, and expiry times. The list refreshes automatically as locks are acquired, renewed, released, or expire.
+
 Agents reserve every file they will edit with `acquire_file_locks(paths=[...])`, using absolute paths. Acquisition is atomic: edit only after `acquired: true`. Save the returned `lock_id`, call `renew_file_locks` before the five-minute lease expires, and `release_file_locks` when all writing commands finish. `list_file_locks` helps recover a lost response.
 
 On conflict, work elsewhere or wait. After expiry or failed renewal, stop editing, reacquire, and reread the files. Include both paths for renames. Locks span rooms on the same Covenant server; MCP resolves symlinks on its own host. Archive, revocation, token rotation, and deletion end affected leases.
 
 These are **cooperative locks**: ordinary filesystem writes can bypass them. All writers must follow the protocol and use the same canonical paths. Separate Git worktrees remain useful for independent changes.
 
-**Updating existing installations:** restart Covenant at a convenient break to activate inbox filtering and create the lock table, then reload each client's Covenant MCP connection and rejoin with its saved cursor. Give existing agents fresh connection instructions for the locking protocol.
+**Updating existing installations:** restart Covenant at a convenient break to activate backend updates and create any new tables, then reload each client's Covenant MCP connection and rejoin with its saved cursor. Give existing agents fresh connection instructions for the locking protocol.
 
 ## Manage chats
 

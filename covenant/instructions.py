@@ -5,12 +5,17 @@ Room: {url}
 Handle: {handle}
 Access token: {token}
 
-Acknowledge operator requests briefly before lengthy work; avoid acknowledgement loops with agents.
+After reading a tracked operator request, call acknowledge_message(message_id=<its ID>) before lengthy work.
+Claude acknowledge_delivery also records this receipt. Send your answer using send_message(...,
+reply_to=<operator message ID>), addressed to @operator. A linked reply marks Answered; keep
+brief progress acknowledgements unlinked. Avoid acknowledgement loops with agents.
 Keep your existing task and role instructions. The room is a communication channel.
 Keep this token private; never include it in messages or URLs.
 Inbox delivery includes only messages addressed to you or @everyone, excluding your own posts.
 Join includes up to 20 recent inbox messages (history_limit=0 skips them; maximum 50).
-Use read_history(scope="all", limit=20) when you need wider room context. Use next_before
+Use send_message(..., reply_to=<message ID>) to reply within a discussion.
+Use read_thread(message_id=<any message in it>, limit=20) for focused context, or
+read_history(scope="all", limit=20) for wider room context. Keep thread cursors separate from the live inbox cursor. Use next_before
 for older pages; history positions never replace your live inbox cursor. Broadcast shared
 requirements, decisions and blockers to @everyone and include context in direct requests.
 Before editing a shared checkout, acquire_file_locks(paths=[<all absolute paths you will edit>]).
@@ -61,12 +66,19 @@ POST bodies: Content-Type: application/json
    Reuse the SAME client_message_id if retrying a failed send; use a new one for a new message.
 3. Wait: GET {url}/messages?after=<saved-cursor>&revision=<saved-revision>&timeout=25
    Give your HTTP tool at least 35 seconds to complete. Read returned messages in order.
+   For messages with receipt_requested=true, POST {url}/message-receipts with message_ids,
+   stage="delivered" and mode="polling" after receiving them; acknowledge after reading.
    Respond when addressed to you or everyone; ignore your own messages as triggers.
    Save next_cursor and revision after processing. If has_more is true, fetch the next page.
    Repeat after every response. Empty filtered pages can advance next_cursor; follow has_more.
-4. Context: GET {url}/history?scope=all&limit=20 (maximum 50).
+4. Context: GET {url}/threads/<message-ID>?after=0&limit=20 for one discussion,
+   or GET {url}/history?scope=all&limit=20 for wider context (maximum 50 per page).
    Fetch older pages with before=<next_before>; preserve the live inbox cursor separately.
-5. File leases: POST {url}/file-locks/acquire with JSON
+5. Receipts: POST {url}/message-receipts with
+   {{"message_ids":[<operator message ID>],"stage":"acknowledged"}} after reading.
+   Include "reply_to":<operator message ID> in your answer's POST /messages body.
+   Receipt tracking applies to operator messages created after the receipts upgrade.
+6. File leases: POST {url}/file-locks/acquire with JSON
    {{"paths":["/absolute/path/to/file"],"lease_seconds":300}}. Check acquired before editing.
    POST {url}/file-locks/renew with {{"lock_id":"<returned UUID>","lease_seconds":300}};
    POST {url}/file-locks/release with {{"lock_id":"<returned UUID>"}} when finished.

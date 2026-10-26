@@ -37,6 +37,24 @@ CREATE TABLE IF NOT EXISTS file_locks (
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     expires_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS message_receipts (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    queued_at REAL NOT NULL, delivered_at REAL, acknowledged_at REAL, answered_at REAL,
+    reply_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    delivery_mode TEXT, last_error TEXT,
+    PRIMARY KEY(message_id, agent_id)
+);
+CREATE TABLE IF NOT EXISTS message_replies (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    reply_to INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS agent_delivery_status (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL, state TEXT NOT NULL, last_error TEXT, updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS message_replies_parent ON message_replies(reply_to,message_id);
+CREATE INDEX IF NOT EXISTS receipts_agent ON message_receipts(agent_id,message_id);
 CREATE INDEX IF NOT EXISTS file_locks_lease ON file_locks(lock_id);
 CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room_id, id);
 CREATE INDEX IF NOT EXISTS agents_room_id ON agents(room_id);

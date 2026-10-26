@@ -22,7 +22,9 @@ from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
 from .db import Database
 from .instructions import connection_instructions
-from .file_locks import register_file_lock_routes
+from .file_locks import register_file_lock_routes, visible_file_locks
+from .receipts import record_receipt, receipt_rows, register_receipt_routes
+from .threads import register_thread_routes, thread_root
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "covenant_session"
@@ -75,6 +77,7 @@ class DeliveryAck(Input):
 
 
 class NewMessage(Input):
+    reply_to: int | None = Field(default=None, ge=1, le=2**63 - 1)
     client_message_id: str = Field(min_length=1, max_length=128)
     text: str = Field(min_length=1, max_length=16000)
 
@@ -177,9 +180,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             remaining = remaining[match.end():].lstrip()
         return targets, remaining
 
-    def message_dict(row):
+    def message_dict(row, conn):
         result = {key: row[key] for key in ("id", "sender", "target", "text", "created_at")}
         result["targets"] = message_targets(row["text"])[0]
+        link = conn.execute("SELECT reply_to FROM message_replies WHERE message_id=?", (row["id"],)).fetchone()
+        if link:
+            result["reply_to"] = link["reply_to"]
+            result["thread_root"] = thread_root(conn, row["id"])
+        if row["sender"] == "operator":
+            result["receipt_requested"] = bool(conn.execute(
+                "SELECT 1 FROM message_receipts WHERE message_id=? LIMIT 1", (row["id"],)).fetchone())
         return result
 
     def envelope(conn, room_id, after=0, before=None):
@@ -195,7 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             more = len(rows) > 100
             rows = rows[:100]
         return {"room": current, "room_status": current["status"],
-                "messages": [message_dict(r) for r in rows],
+                "messages": [message_dict(r, conn) for r in rows],
                 "next_cursor": rows[-1]["id"] if rows else after,
                 "has_more": more, "revision": current["revision"],
                 "participants": [{"handle": "operator", "kind": "operator"}] + participants(conn, room_id)}
@@ -213,7 +223,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rows = list(conn.execute(query + " ORDER BY id DESC LIMIT ?",
                     (rid, before if before is not None else 2**63 - 1, limit + 1)))
         more = len(rows) > limit
-        messages = [message_dict(row) for row in reversed(rows[:limit])]
+        messages = [message_dict(row, conn) for row in reversed(rows[:limit])]
         return {"messages": messages, "has_more": more, "scope": scope,
                 "next_before": messages[0]["id"] if messages else None}
 
@@ -231,9 +241,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         old = conn.execute("SELECT * FROM messages WHERE room_id=? AND sender=? AND client_message_id=?",
                            (room_id, sender, body.client_message_id)).fetchone()
         if old:
-            if old["text"] != body.text:
+            old_link = conn.execute("SELECT reply_to FROM message_replies WHERE message_id=?", (old["id"],)).fetchone()
+            if old["text"] != body.text or (old_link["reply_to"] if old_link else None) != body.reply_to:
                 raise HTTPException(409, "That client_message_id was already used for different text")
-            return message_dict(old)
+            return message_dict(old, conn)
         if current["status"] == "archived" or (current["status"] == "paused" and not is_operator):
             raise HTTPException(409, f"Conversation is {current['status']}")
         targets, message_body = message_targets(body.text)
@@ -244,11 +255,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "SELECT 1 FROM agents WHERE room_id=? AND handle=? AND revoked=0",
                     (room_id, recipient)).fetchone():
                 raise HTTPException(422, f"Unknown or revoked participant: @{recipient}")
+        replying_agent = None
+        if body.reply_to is not None:
+            if not conn.execute("SELECT 1 FROM messages WHERE id=? AND room_id=?", (body.reply_to, room_id)).fetchone():
+                raise HTTPException(422, "Reply to an existing message in this conversation")
+            if not is_operator and {"operator", "everyone"}.intersection(targets):
+                replying_agent = conn.execute("""SELECT a.id FROM agents a JOIN message_receipts r ON r.agent_id=a.id
+                    WHERE a.room_id=? AND a.handle=? AND r.message_id=?""", (room_id, sender, body.reply_to)).fetchone()
         target = targets[0]  # Preserve the original field for existing clients.
         cursor = conn.execute("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
                               (room_id, sender, target, body.text, body.client_message_id, time.time()))
-        conn.execute("UPDATE rooms SET updated_at=? WHERE id=?", (time.time(), room_id))
-        return message_dict(conn.execute("SELECT * FROM messages WHERE id=?", (cursor.lastrowid,)).fetchone())
+        message_id, now = cursor.lastrowid, time.time()
+        if is_operator:
+            for recipient in conn.execute("SELECT id,handle FROM agents WHERE room_id=? AND revoked=0", (room_id,)):
+                if "everyone" in targets or recipient["handle"] in targets:
+                    conn.execute("INSERT INTO message_receipts(message_id,agent_id,queued_at) VALUES (?,?,?)",
+                                 (message_id, recipient["id"], now))
+        if body.reply_to is not None:
+            conn.execute("INSERT INTO message_replies VALUES (?,?)", (message_id, body.reply_to))
+        if replying_agent is not None:
+            conn.execute("""UPDATE message_receipts SET delivered_at=COALESCE(delivered_at,?),
+                acknowledged_at=COALESCE(acknowledged_at,?), answered_at=COALESCE(answered_at,?),
+                reply_id=COALESCE(reply_id,?), last_error=NULL WHERE message_id=? AND agent_id=?""",
+                (now, now, now, message_id, body.reply_to, replying_agent["id"]))
+        conn.execute("UPDATE rooms SET updated_at=? WHERE id=?", (now, room_id))
+        return message_dict(conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone(), conn)
 
     @app.get("/api/status")
     async def status():
@@ -351,6 +382,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with db.connect() as conn:
             result = room(conn, str(room_id))
             result["agents"] = participants(conn, str(room_id), True)
+            result["file_locks"] = visible_file_locks(conn, str(room_id))
             return result
 
     @app.patch("/api/rooms/{room_id}")
@@ -438,7 +470,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                 before: int | None = Query(None, ge=1)):
         operator(request)
         with db.connect() as conn:
-            return envelope(conn, str(room_id), after, before)
+            result = envelope(conn, str(room_id), after, before)
+            receipts = receipt_rows(conn, str(room_id), [m["id"] for m in result["messages"] if m["sender"] == "operator"])
+            for message in result["messages"]:
+                if message["sender"] == "operator":
+                    message["receipts"] = receipts.get(str(message["id"]), [])
+            return result
 
     @app.post("/api/rooms/{room_id}/messages")
     async def operator_send(room_id: UUID, body: NewMessage, request: Request):
@@ -468,6 +505,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result.update(messages=catch_up["messages"], history_truncated=catch_up["has_more"],
                           history_scope=body.history_scope, next_before=catch_up["next_before"],
                           handle=identity["handle"])
+            result["capabilities"] = {"message_receipts": True}
+            conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
+                ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
+                (identity["id"], "codex" if body.session_id else "polling", "joined", None, now))
             # next_cursor remains the room watermark, independently of history selection.
             # Reconnecting agents must retain their previous processed cursor.
             if body.session_id:
@@ -481,7 +522,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 binding = conn.execute("SELECT cursor FROM delivery_bindings WHERE agent_id=?",
                                        (identity["id"],)).fetchone()
                 result["delivery"] = {"mode": "codex", "session_id": str(body.session_id),
-                                      "connection_id": str(body.connection_id), "cursor": binding["cursor"]}
+                                      "connection_id": str(body.connection_id), "cursor": binding["cursor"], "receipts_enabled": True}
             else:
                 # An explicit ordinary join switches this participant back to polling.
                 conn.execute("DELETE FROM delivery_bindings WHERE agent_id=?", (identity["id"],))
@@ -523,20 +564,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if body.cursor > latest:
                 raise HTTPException(422, "Cursor exceeds the room history")
             cursor = max(binding["cursor"], body.cursor)
+            delivered = [row[0] for row in conn.execute(
+                "SELECT message_id FROM message_receipts WHERE agent_id=? AND message_id>? AND message_id<=?",
+                (identity["id"], binding["cursor"], cursor))]
+            record_receipt(conn, identity["id"], delivered, "delivered", "codex")
             conn.execute("UPDATE delivery_bindings SET cursor=?,updated_at=? WHERE agent_id=?",
                          (cursor, time.time(), identity["id"]))
         return {"cursor": cursor}
 
     @app.get("/{room_id}/messages")
     async def poll(room_id: UUID, request: Request, after: int = Query(0, ge=0),
-                   revision: int | None = Query(None, ge=0), timeout: float = Query(25, ge=0, le=25)):
-        return await wait_for_changes(str(room_id), request, after, revision, timeout)
+                   revision: int | None = Query(None, ge=0), timeout: float = Query(25, ge=0, le=25),
+                   transport: Literal["polling", "claude"] = "polling"):
+        return await wait_for_changes(str(room_id), request, after, revision, timeout, transport=transport)
 
-    async def wait_for_changes(rid, request, after, revision, timeout, connection_id=None):
+    async def wait_for_changes(rid, request, after, revision, timeout, connection_id=None, transport="polling"):
         with db.connect() as conn:
             identity = agent(conn, request, rid)
             conn.execute("UPDATE agents SET last_seen=? WHERE id=?", (time.time(), identity["id"]))
             baseline = room(conn, rid)["revision"] if revision is None else revision
+            if connection_id is None and transport == "polling":
+                # A later cursor confirms the client received earlier messages. Merely
+                # preparing an HTTP response does not establish successful delivery.
+                seen = [r[0] for r in conn.execute("SELECT message_id FROM message_receipts WHERE agent_id=? AND message_id<=? AND delivered_at IS NULL", (identity["id"], after))]
+                record_receipt(conn, identity["id"], seen, "delivered", "polling")
+                conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
+                    ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
+                    (identity["id"], "polling", "listening", None, time.time()))
         deadline = asyncio.get_running_loop().time() + timeout
         async with conditions[rid]:
             while True:
@@ -566,6 +620,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     pass
 
     register_file_lock_routes(app, db, agent, room)
+    register_receipt_routes(app, db, agent, operator, room)
+    register_thread_routes(app, db, agent, operator, room, message_dict)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

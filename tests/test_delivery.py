@@ -209,6 +209,6 @@ def test_delivery_failure_recommends_polling_and_operator_ack():
     worker = listener(None)
     worker.state = "retrying"
     assert worker.status()["polling_recommended"]
-    assert "brief acknowledgement" in worker.prompt({"id": 1, "sender": "operator", "text": "status?"})
+    assert "acknowledge_message" in worker.prompt({"id": 1, "sender": "operator", "text": "status?"})
     worker.state = "listening"
     assert not worker.status()["polling_recommended"]

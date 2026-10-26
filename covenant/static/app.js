@@ -1,6 +1,6 @@
 "use strict";
 const $ = (selector) => document.querySelector(selector);
-const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, loading: false, pending: null};
+const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, loading: false, pending: null, replyTo: null};
 let toastTimer;
 const timeText = (timestamp) => new Date(timestamp * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
 function element(tag, className, text) {const e = document.createElement(tag); if (className) e.className = className; if (text !== undefined) e.textContent = text; return e;}
@@ -83,20 +83,27 @@ $("#notifications-toggle").onclick = async () => {
   }
 };
 updateNotificationButton();
-let panelPreferences = {conversations: false, participants: false};
+let panelPreferences = {conversations: false, participants: false, objective: false, "file-locks": false};
 try {
   const saved = JSON.parse(localStorage.getItem("covenant-panels") || "{}");
-  panelPreferences = {conversations: saved?.conversations === true, participants: saved?.participants === true};
+  for (const name of Object.keys(panelPreferences)) panelPreferences[name] = saved?.[name] === true;
 } catch {}
 function applyPanelPreferences() {
   $("#workspace").classList.toggle("sidebar-collapsed", panelPreferences.conversations);
-  for (const name of ["conversations", "participants"]) {
+  for (const [name, target, label] of [["conversations", "conversations-panel", "chats"], ["participants", "participants-panel", "participants"],
+      ["objective", "objective-content", "room objective"], ["file-locks", "file-lock-content", "file locks"]]) {
     const collapsed = panelPreferences[name], button = $("#toggle-" + name);
-    $("#" + name + "-panel").hidden = collapsed;
-    button.textContent = `${collapsed ? "Show" : "Hide"} ${name === "conversations" ? "chats" : "participants"}`;
+    $("#" + target).hidden = collapsed;
+    const explanation = `${collapsed ? "Show" : "Hide"} ${label}`;
+    button.title = explanation; button.setAttribute("aria-label", explanation);
     button.setAttribute("aria-expanded", String(!collapsed));
   }
+  $("#reopen-conversations").hidden = !panelPreferences.conversations;
+  $("#participants-reopen-rail").hidden = !panelPreferences.participants || !state.room;
+  $("#reopen-participants").disabled = !state.room;
   $("#toggle-participants").disabled = !state.room;
+  $("#toggle-objective").disabled = !state.room?.objective;
+  $("#toggle-file-locks").disabled = !state.room;
 }
 function togglePanel(name) {
   const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
@@ -104,11 +111,19 @@ function togglePanel(name) {
   panelPreferences[name] = !panelPreferences[name]; applyPanelPreferences();
   try {localStorage.setItem("covenant-panels", JSON.stringify(panelPreferences));} catch {}
   if (stick && state.room) scrollBottom();
+  if (["conversations", "participants"].includes(name)) {
+    $("#" + (panelPreferences[name] ? "reopen-" : "toggle-") + name).focus({preventScroll: true});
+  }
 }
 $("#toggle-conversations").onclick = () => togglePanel("conversations");
 $("#toggle-participants").onclick = () => togglePanel("participants");
+$("#reopen-conversations").onclick = () => togglePanel("conversations");
+$("#reopen-participants").onclick = () => togglePanel("participants");
+$("#toggle-objective").onclick = () => togglePanel("objective");
+$("#toggle-file-locks").onclick = () => togglePanel("file-locks");
 applyPanelPreferences();
 function showLogin() {
+  clearReplyTarget();
   hideMentions();
   resetNotifications();
   closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++; applyPanelPreferences();
@@ -163,7 +178,10 @@ async function setFilter(archived) {closeRoomMenu(); state.archived = archived; 
 $("#active-tab").onclick = () => setFilter(false).catch(e => toast(e.message));
 $("#archived-tab").onclick = () => setFilter(true).catch(e => toast(e.message));
 function updateRoom(room) {
+  if ("file_locks" in room || state.room?.id !== room.id) renderFileLocks(room.file_locks);
   state.room = room; applyPanelPreferences();
+  if (room.status === "archived") clearReplyTarget();
+  document.querySelectorAll(".reply-button").forEach(button => {button.disabled = room.status === "archived";});
   $("#no-messages h2").textContent = room.status === "archived" ? "No messages in this archive." : "The room is ready.";
   $("#no-messages p").textContent = room.status === "archived" ? "Restore the conversation to continue." : "Invite an agent or send the first message.";
   $("#room-title").textContent = room.title; $("#room-status").textContent = room.status;
@@ -184,6 +202,7 @@ async function selectRoom(id) {
   const generation = ++state.generation;
   const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807`)]);
   if (generation !== state.generation || !state.me) return;
+  clearReplyTarget();
   updateRoom(room); state.agents = room.agents; state.cursor = messages.next_cursor;
   state.first = messages.messages[0]?.id || 0; state.pending = null;
   $("#messages").replaceChildren(); $("#message-text").value = ""; $("#message-error").textContent = "";
@@ -205,7 +224,110 @@ function senderAvatar(handle) {
   avatar.style.color = colors.foreground; avatar.style.backgroundColor = colors.background;
   return avatar;
 }
-function renderMessage(message) {
+function updateMessageReceipts(article, receipts) {
+  let container = article.querySelector(".message-receipts");
+  if (!container) {
+    container = element("div", "message-receipts");
+    article.querySelector(".message-meta").append(container);
+  }
+  const snapshot = JSON.stringify(receipts || []);
+  if (container.dataset.snapshot === snapshot) return;
+  const expanded = new Set(Array.from(container.querySelectorAll("details[open]")).map(node => node.dataset.handle));
+  const focusedHandle = container.contains(document.activeElement) ? document.activeElement.closest("details")?.dataset.handle : null;
+  container.dataset.snapshot = snapshot;
+  container.replaceChildren();
+  if (!receipts?.length) {
+    container.append(element("span", "receipt-unavailable", "Delivery tracking unavailable"));
+    return;
+  }
+  const labels = {queued: "Queued", delivered: "Delivered", acknowledged: "Acknowledged", answered: "Answered"};
+  const modes = {polling: "Polling", codex: "Codex background", claude: "Claude channel", catch_up: "Join catch-up"};
+  for (const receipt of receipts) {
+    const details = element("details", "recipient-receipt"); details.dataset.handle = receipt.handle;
+    details.open = expanded.has(receipt.handle);
+    const summary = element("summary", "receipt-status", `${receipt.handle}: ${labels[receipt.status] || "Unknown"}`);
+    if (receipt.last_error || receipt.delivery_error) summary.append(element("span", "receipt-warning", " · attention"));
+    details.append(summary);
+    const info = element("div", "receipt-details");
+    for (const [key, label] of [["queued_at", "Queued"], ["delivered_at", "Delivered"], ["acknowledged_at", "Acknowledged"], ["answered_at", "Answered"]]) {
+      if (receipt[key] != null) info.append(element("div", "", `${label}: ${new Date(receipt[key] * 1000).toLocaleString()}`));
+    }
+    info.append(element("div", "", `Delivery: ${modes[receipt.delivery_mode] || "Awaiting transport confirmation"}`));
+    if (receipt.current_mode) info.append(element("div", "", `Last reported connection: ${modes[receipt.current_mode] || receipt.current_mode} · ${receipt.delivery_state}`));
+    if (receipt.delivery_updated_at != null) info.append(element("div", "", `Connection report: ${new Date(receipt.delivery_updated_at * 1000).toLocaleString()}`));
+    if (receipt.revoked) info.append(element("div", "", "Agent access revoked"));
+    if (receipt.reply_id) info.append(element("div", "", `Linked reply: #${receipt.reply_id}`));
+    if (receipt.last_error || receipt.delivery_error) info.append(element("div", "receipt-error", receipt.last_error || receipt.delivery_error));
+    info.append(element("div", "receipt-meaning", "Delivered confirms transport. Acknowledged confirms an explicit receipt. Answered confirms a linked reply."));
+    details.append(info); container.append(details);
+    if (focusedHandle === receipt.handle) summary.focus({preventScroll: true});
+  }
+}
+async function refreshReceipts(roomId, generation) {
+  const articles = Array.from($("#messages").querySelectorAll(".operator-message"));
+  for (let offset = 0; offset < articles.length; offset += 100) {
+    const batch = articles.slice(offset, offset + 100);
+    let result;
+    try { result = await api(`/api/rooms/${roomId}/message-receipts?ids=${batch.map(a => a.dataset.id).join(",")}`); }
+    catch (error) { if (error.status === 404) return; throw error; }
+    if (generation !== state.generation || !state.me) return;
+    const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+    for (const article of batch) updateMessageReceipts(article, result.receipts[article.dataset.id] || []);
+    if (stick) scrollBottom();
+  }
+}
+const threadViews = new WeakMap();
+function clearReplyTarget() {
+  state.replyTo = null; $("#reply-context").hidden = true; $("#reply-label").textContent = "";
+}
+function setReplyTarget(message) {
+  if (!state.room || state.room.status === "archived") return;
+  state.replyTo = {id: message.id, sender: message.sender}; state.pending = null;
+  $("#reply-label").textContent = `Replying to ${message.sender} · #${message.id}`;
+  $("#reply-context").hidden = false;
+  const input = $("#message-text");
+  if (!input.value.trim()) {
+    let recipient = message.sender === "operator" ? (message.targets || []).find(handle => handle !== "operator") || "everyone" : message.sender;
+    if (!["operator", "everyone"].includes(recipient) && !state.agents.some(a => a.handle === recipient && !a.revoked)) recipient = "everyone";
+    input.value = `@${recipient} `;
+  }
+  input.focus();
+}
+$("#cancel-reply").onclick = clearReplyTarget;
+async function loadThread(details) {
+  const view = threadViews.get(details);
+  if (!view || view.busy || !details.open || view.generation !== state.generation) return;
+  view.busy = true; view.moreButton.disabled = true; view.error.textContent = "";
+  try {
+    const result = await api(`/api/rooms/${view.roomId}/threads/${view.messageId}?after=${view.cursor}&limit=20`);
+    if (view.generation !== state.generation || !state.me || !details.isConnected) return;
+    if (!view.loaded && result.root.id !== view.messageId) {
+      view.body.append(element("p", "thread-root-label", "Thread started here"), renderMessage(result.root, true));
+    }
+    for (const message of result.messages) {
+      if (!view.body.querySelector(`[data-id="${message.id}"]`)) {
+        view.body.append(renderMessage(message, true)); view.count++;
+      }
+    }
+    view.loaded = true; view.cursor = result.next_cursor; view.more = result.has_more;
+    view.summary.textContent = `Thread · ${view.count}${view.more ? "+" : ""} ${view.count === 1 && !view.more ? "reply" : "replies"}`;
+    view.moreButton.hidden = !view.more; view.moreButton.textContent = "Load more replies";
+    if (!view.count && result.root.id === view.messageId) {
+      if (!view.body.querySelector(".thread-empty")) view.body.append(element("p", "thread-empty muted", "No replies yet."));
+    } else {view.body.querySelector(".thread-empty")?.remove();}
+  } catch (error) {
+    if (view.generation !== state.generation || !state.me) return;
+    view.error.textContent = error.status === 404 ? "Thread unavailable. Update the server to enable threads." : error.message;
+    view.moreButton.hidden = false; view.moreButton.textContent = "Retry";
+  } finally {view.busy = false; view.moreButton.disabled = false;}
+}
+async function refreshThreads() {
+  for (const details of $("#messages").querySelectorAll(".message-thread[open]")) {
+    const view = threadViews.get(details);
+    if (view && !view.more) await loadThread(details);
+  }
+}
+function renderMessage(message, inThread = false) {
   const own = message.sender === "operator";
   const article = element("article", "message" + (own ? " operator-message" : "")); article.dataset.id = message.id;
   const avatar = senderAvatar(message.sender);
@@ -221,16 +343,38 @@ function renderMessage(message) {
     recipients.forEach(handle => addresses.append(element("span", "mention message-recipient", "@" + handle)));
     bubble.append(addresses);
   }
+  if (message.reply_to) {
+    const parent = element("span", "reply-reference", `Reply to #${message.reply_to}`);
+    bubble.append(parent);
+  }
   const content = element("div", "markdown-content");
   // Only the bundled, HTML-disabled parser may produce message HTML.
   content.innerHTML = CovenantMarkdown.render(body);
   bubble.append(content);
-  main.append(meta, bubble); article.append(avatar, main); return article;
+  main.append(meta, bubble); article.append(avatar, main);
+  if (own) updateMessageReceipts(article, message.receipts);
+  const actions = element("div", "message-actions");
+  const reply = element("button", "reply-button", "Reply"); reply.type = "button";
+  reply.disabled = state.room?.status === "archived";
+  reply.setAttribute("aria-label", `Reply to message #${message.id} from ${message.sender}`);
+  reply.onclick = () => setReplyTarget(message); actions.append(reply); main.append(actions);
+  if (!inThread) {
+    const details = element("details", "message-thread"), summary = element("summary", "thread-summary", "View thread");
+    const body = element("div", "thread-body"), error = element("p", "error thread-error");
+    const more = element("button", "thread-more", "Load more replies"); more.type = "button"; more.hidden = true;
+    actions.classList.add("has-thread");
+    details.append(summary, body, error, more); actions.append(details);
+    threadViews.set(details, {messageId: message.id, roomId: state.room.id, generation: state.generation,
+      cursor: 0, loaded: false, busy: false, more: false, count: 0, body, error, moreButton: more, summary});
+    details.ontoggle = () => {if (details.open) loadThread(details);};
+    more.onclick = () => loadThread(details);
+  }
+  return article;
 }
 function appendMessages(messages) {
   const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
   for (const message of messages) {
-    if (!$("#messages").querySelector(`[data-id="${message.id}"]`)) $("#messages").append(renderMessage(message));
+    if (!$("#messages").querySelector(`:scope > [data-id="${message.id}"]`)) $("#messages").append(renderMessage(message));
     if (!state.first) state.first = message.id;
   }
   $("#no-messages").hidden = $("#messages").children.length > 0;
@@ -251,6 +395,29 @@ function seenText(agent) {
   if (!agent.joined_at) return "Waiting to join";
   const seconds = Math.max(0, (Date.now() / 1000) - agent.last_seen);
   return seconds < 40 ? "Seen just now" : seconds < 3600 ? `Seen ${Math.floor(seconds / 60)} min ago` : "Seen " + new Date(agent.last_seen * 1000).toLocaleString();
+}
+function renderFileLocks(result) {
+  const list = $("#file-lock-list"), empty = $("#file-lock-empty");
+  list.replaceChildren();
+  const locks = result?.locks || [];
+  $("#file-lock-count").textContent = result ? `${locks.length}${result.truncated ? "+" : ""}` : "";
+  $("#file-lock-limit").hidden = !result?.truncated;
+  empty.hidden = locks.length > 0;
+  empty.textContent = result ? "No files currently reserved." : "File-lock visibility unavailable until the server is updated.";
+  for (const lock of locks) {
+    const item = element("li", "file-lock-item");
+    const owner = element("strong", "file-lock-owner", lock.owner);
+    const colors = senderColors(lock.owner); owner.style.color = colors.foreground;
+    const path = element("code", "file-lock-path", lock.path); path.title = lock.path;
+    const seconds = Math.max(0, Math.ceil(lock.expires_at - result.server_time));
+    const minutes = Math.floor(seconds / 60), remainder = seconds % 60;
+    const remaining = minutes ? `${minutes}m ${remainder}s` : `${seconds}s`;
+    const expiry = element("time", "file-lock-expiry", `Expires in ${remaining}`);
+    expiry.dateTime = new Date(lock.expires_at * 1000).toISOString();
+    expiry.title = `Expires ${new Date(lock.expires_at * 1000).toLocaleString()}`;
+    const exact = element("span", "file-lock-exact", new Date(lock.expires_at * 1000).toLocaleTimeString());
+    item.append(owner, path, expiry, exact); list.append(item);
+  }
 }
 function renderAgents() {
   const list = $("#agent-list"); list.replaceChildren();
@@ -277,6 +444,7 @@ async function roomAction(status, target = state.room) {
 $("#pause-room").onclick = () => roomAction(state.room.status === "paused" ? "active" : "paused");
 $("#archive-room").onclick = () => roomAction(state.room.status === "archived" ? "active" : "archived");
 function clearConversation() {
+  clearReplyTarget();
   hideMentions();
   state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null; applyPanelPreferences();
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); $("#message-text").value = "";
@@ -434,10 +602,11 @@ $("#message-text").addEventListener("keyup", event => {
 });
 $("#message-form").addEventListener("submit", async (event) => {
   event.preventDefault(); hideMentions(); const room = state.room, text = $("#message-text").value.trim(); if (!room || !text) return;
-  if (!state.pending || state.pending.text !== text || state.pending.room !== room.id) state.pending = {room: room.id, text, client_message_id: crypto.randomUUID()};
+  const replyTo = state.replyTo?.id || null;
+  if (!state.pending || state.pending.text !== text || state.pending.room !== room.id || state.pending.reply_to !== replyTo) state.pending = {room: room.id, text, reply_to: replyTo, client_message_id: crypto.randomUUID()};
   const pending = state.pending; $("#send-message").disabled = true; $("#message-error").textContent = "";
-  try {await api(`/api/rooms/${room.id}/messages`, {method: "POST", body: JSON.stringify({text, client_message_id: pending.client_message_id})});
-    if (state.room?.id === room.id) {if ($("#message-text").value.trim() === text) $("#message-text").value = ""; state.pending = null; await refreshCurrent(); scrollBottom();}
+  try {await api(`/api/rooms/${room.id}/messages`, {method: "POST", body: JSON.stringify({text, client_message_id: pending.client_message_id, ...(pending.reply_to ? {reply_to: pending.reply_to} : {})})});
+    if (state.room?.id === room.id) {if ($("#message-text").value.trim() === text && (state.replyTo?.id || null) === pending.reply_to) {$("#message-text").value = ""; clearReplyTarget();} if (state.pending === pending) state.pending = null; await refreshCurrent(); scrollBottom();}
   } catch(error) {if (state.room?.id === room.id) $("#message-error").textContent = error.message;}
   finally {$("#send-message").disabled = state.room?.status === "archived";}
 });
@@ -468,6 +637,9 @@ async function refreshCurrent() {
   updateRoom(room); state.agents = room.agents; renderAgents();
   if (!$("#mention-picker").hidden) updateMentions();
   appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor);
+  await refreshThreads();
+  if (generation !== state.generation) return;
+  await refreshReceipts(id, generation);
 }
 async function refresh() {
   if (!state.me || state.loading) return; state.loading = true;

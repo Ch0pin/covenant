@@ -37,7 +37,7 @@ function panelSetup(stored = new Map()) {
   function $(selector) {
     if (!nodes.has(selector)) nodes.set(selector,{hidden:false,disabled:false,attrs:{},classes:new Set(),
       scrollHeight:100,scrollTop:0,clientHeight:100,
-      setAttribute(k,v){this.attrs[k]=v;},classList:{toggle(name,on){if(on) nodes.get(selector).classes.add(name);else nodes.get(selector).classes.delete(name);}}});
+      focus(){this.focused=true;},setAttribute(k,v){this.attrs[k]=v;},classList:{toggle(name,on){if(on) nodes.get(selector).classes.add(name);else nodes.get(selector).classes.delete(name);}}});
     return nodes.get(selector);
   }
   const ctx=vm.createContext({$,state:{room:{id:'one'}},localStorage:{getItem:k=>stored.get(k),setItem:(k,v)=>stored.set(k,v)},closeRoomMenu(){},hideMentions(){},scrollBottom(){}});
@@ -56,7 +56,8 @@ test('collapses panels independently and restores preferences on reload', () => 
   assert.equal(f.$('#participants-panel').hidden,true);
   f.$('#toggle-conversations').onclick();
   assert.equal(f.$('#conversations-panel').hidden,false);
-  assert.equal(f.$('#toggle-conversations').textContent,'Hide chats');
+  assert.equal(f.$('#toggle-conversations').attrs['aria-label'],'Hide chats');
+  assert.equal(f.$('#toggle-conversations').title,'Hide chats');
   assert.equal(f.$('#participants-panel').hidden,true);
 });
 
@@ -79,4 +80,41 @@ test('separates all leading recipients and retains Markdown indentation', () => 
     recipients:['alice'],body:'Normal text mentioning @operator'
   });
   assert.deepEqual(markdown.splitRecipients('@alice@example.com'),{recipients:[],body:'@alice@example.com'});
+});
+
+test('objective and file-lock icons toggle independently and preserve labels across reload',()=>{
+  const stored=new Map();let f=panelSetup(stored);
+  f.ctx.state.room.objective='Review together';f.ctx.applyPanelPreferences();
+  f.$('#toggle-objective').onclick();
+  assert.equal(f.$('#objective-content').hidden,true);
+  assert.equal(f.$('#toggle-objective').title,'Show room objective');
+  assert.equal(f.$('#toggle-objective').attrs['aria-expanded'],'false');
+  assert.equal(f.$('#file-lock-content').hidden,false);
+  f.$('#toggle-file-locks').onclick();
+  f=panelSetup(stored);
+  assert.equal(f.$('#objective-content').hidden,true);
+  assert.equal(f.$('#file-lock-content').hidden,true);
+  assert.equal(f.$('#toggle-file-locks').attrs['aria-label'],'Show file locks');
+  f.$('#toggle-file-locks').onclick();
+  assert.equal(f.$('#file-lock-content').hidden,false);
+  assert.equal(f.$('#toggle-file-locks').title,'Hide file locks');
+});
+
+test('side panel headers hand off to edge reopen icons and restore keyboard focus',()=>{
+  const f=panelSetup();
+  assert.equal(f.$('#reopen-conversations').hidden,true);
+  assert.equal(f.$('#participants-reopen-rail').hidden,true);
+  f.$('#toggle-conversations').onclick();
+  assert.equal(f.$('#reopen-conversations').hidden,false);
+  assert.equal(f.$('#reopen-conversations').focused,true);
+  f.$('#reopen-conversations').onclick();
+  assert.equal(f.$('#conversations-panel').hidden,false);
+  assert.equal(f.$('#reopen-conversations').hidden,true);
+  assert.equal(f.$('#toggle-conversations').focused,true);
+  f.$('#toggle-participants').onclick();
+  assert.equal(f.$('#participants-reopen-rail').hidden,false);
+  assert.equal(f.$('#reopen-participants').focused,true);
+  f.$('#reopen-participants').onclick();
+  assert.equal(f.$('#participants-panel').hidden,false);
+  assert.equal(f.$('#participants-reopen-rail').hidden,true);
 });

@@ -38,6 +38,17 @@ class RenewLease(Lease):
     lease_seconds: int = Field(default=300, ge=30, le=3600)
 
 
+def visible_file_locks(conn, room_id):
+    """Read active reservations for the operator without exposing lease IDs."""
+    now = time.time()
+    rows = conn.execute("""SELECT l.path, a.handle AS owner, l.expires_at
+        FROM file_locks l JOIN agents a ON a.id=l.agent_id JOIN rooms r ON r.id=a.room_id
+        WHERE a.room_id=? AND a.revoked=0 AND r.status!='archived' AND l.expires_at>?
+        ORDER BY a.handle,l.path LIMIT 501""", (room_id, now)).fetchall()
+    return {"locks": [dict(row) for row in rows[:500]], "truncated": len(rows) > 500,
+            "server_time": now}
+
+
 def register_file_lock_routes(app, db, agent, room):
     def prune(conn, now):
         # This also handles token rotation/revocation and room archive/delete cleanup.

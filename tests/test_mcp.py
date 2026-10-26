@@ -78,7 +78,7 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room, tmp_path):
             alice, bob = clients
             tools = await alice.list_tools()
             assert {tool.name for tool in tools.tools} == {"join_room", "send_message", "wait_for_messages", "delivery_status", "acknowledge_delivery",
-                "read_history", "acquire_file_locks", "renew_file_locks", "release_file_locks", "list_file_locks"}
+                "read_history", "acquire_file_locks", "renew_file_locks", "release_file_locks", "list_file_locks", "acknowledge_message", "read_thread"}
             error = await alice.call_tool("wait_for_messages", {"after": 0, "timeout": 0})
             assert error.is_error
             joined_a = result_data(await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"]}))
@@ -133,6 +133,25 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room, tmp_path):
             assert file.read_text() == "original"  # Coordination never edits the reserved file.
             invalid = await alice.call_tool("acquire_file_locks", {"paths": ["relative.py"]})
             assert invalid.is_error
+            # Track an operator request through real stdio MCP receipt and linked reply tools.
+            with db.connect() as conn:
+                mid = conn.execute("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
+                    (rid, "operator", "alice", "@alice Please report", "receipt-request", time.time())).lastrowid
+                aid = conn.execute("SELECT id FROM agents WHERE room_id=? AND handle='alice'", (rid,)).fetchone()[0]
+                conn.execute("INSERT INTO message_receipts(message_id,agent_id,queued_at) VALUES (?,?,?)", (mid, aid, time.time()))
+            result_data(await alice.call_tool("wait_for_messages", {"after": mid-1, "timeout": 0}))
+            with db.connect() as conn:
+                receipt = conn.execute("SELECT * FROM message_receipts WHERE message_id=?", (mid,)).fetchone()
+                assert receipt["delivered_at"] and receipt["acknowledged_at"] is None
+            assert result_data(await alice.call_tool("acknowledge_message", {"message_id": mid}))["ok"]
+            answered = result_data(await alice.call_tool("send_message", {
+                "text": "@operator Completed", "client_message_id": "linked-answer", "reply_to": mid}))
+            with db.connect() as conn:
+                receipt = conn.execute("SELECT * FROM message_receipts WHERE message_id=?", (mid,)).fetchone()
+                assert receipt["acknowledged_at"] and receipt["answered_at"] and receipt["reply_id"] == answered["id"]
+            thread = result_data(await alice.call_tool("read_thread", {"message_id": answered["id"]}))
+            assert thread["root"]["id"] == mid and [m["id"] for m in thread["messages"]] == [answered["id"]]
+            assert thread["messages"][0]["reply_to"] == mid
             with db.connect() as conn:
                 conn.execute("UPDATE agents SET revoked=1 WHERE room_id=? AND handle='alice'", (rid,))
             revoked = await alice.call_tool("wait_for_messages", {"after": reply["id"], "timeout": 0})
@@ -276,6 +295,21 @@ def test_claude_channel_stdio_receipts_restart_and_polling(live_room, tmp_path):
         async with AsyncExitStack() as stack:
             client = await open_client(stack)
             await join_and_confirm(client)
+            # Both tracked and pre-upgrade operator messages must remain receivable.
+            for tracked in (True, False):
+                with db.connect() as conn:
+                    mid = conn.execute("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
+                        (rid, "operator", "alice", "@alice Status?", "channel-operator-" + str(tracked), time.time())).lastrowid
+                    if tracked:
+                        aid = conn.execute("SELECT id FROM agents WHERE room_id=? AND handle='alice'", (rid,)).fetchone()[0]
+                        conn.execute("INSERT INTO message_receipts(message_id,agent_id,queued_at) VALUES (?,?,?)", (mid, aid, time.time()))
+                operator_event = await asyncio.wait_for(events.get(), 3)
+                assert operator_event.meta['message_id'] == str(mid)
+                result_data(await client.call_tool('acknowledge_delivery', {'receipt': operator_event.meta['receipt']}))
+                if tracked:
+                    with db.connect() as conn:
+                        receipt = conn.execute("SELECT * FROM message_receipts WHERE message_id=?", (mid,)).fetchone()
+                        assert receipt['delivered_at'] and receipt['acknowledged_at'] and receipt['delivery_mode'] == 'claude'
             sent = await post('channel-1', '@alice @operator From another agent')
             event = await asyncio.wait_for(events.get(), 3)
             assert event.meta['message_id'] == str(sent['id'])

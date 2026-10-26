@@ -178,3 +178,49 @@ def test_lock_schema_upgrade_is_additive_and_repeatable(setup):
     assert before == after
     assert acquire(client, rid, alice, ["/workspace/upgraded.py"])["acquired"]
     assert client.get(f"/{rid}/messages?timeout=0", headers=bearer(alice)).json()["messages"] == [message]
+
+
+def test_operator_panel_lists_current_room_locks_and_tracks_lifecycle(setup):
+    client, app, _, headers, rid, (alice, bob) = setup
+    first = acquire(client, rid, alice, ["/workspace/long/path/review.py"])
+    other = client.post("/api/rooms", headers=headers, json={"title": "Other"}).json()["id"]
+    carol = client.post(f"/api/rooms/{other}/agents", headers=headers, json={"handle": "carol"}).json()
+    acquire(client, other, carol, ["/workspace/other.py"])
+    def panel():
+        response = client.get(f"/api/rooms/{rid}")
+        assert response.status_code == 200
+        return response.json()["file_locks"]
+    result = panel()
+    assert result["locks"] == [{"path": "/workspace/long/path/review.py", "owner": "alice", "expires_at": first["expires_at"]}]
+    assert result["server_time"] < first["expires_at"] and not result["truncated"]
+    assert "lock_id" not in result["locks"][0]
+    renewed = client.post(f"/{rid}/file-locks/renew", headers=bearer(alice),
+        json={"lock_id": first["lock_id"], "lease_seconds": 600}).json()
+    assert panel()["locks"][0]["expires_at"] == renewed["expires_at"]
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "paused"})
+    assert len(panel()["locks"]) == 1
+    lease_action(client, rid, alice, "release", first["lock_id"])
+    assert panel()["locks"] == []
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "active"})
+    acquire(client, rid, bob, ["/workspace/expired.py"])
+    with app.state.db.connect() as conn:
+        conn.execute("UPDATE file_locks SET expires_at=0 WHERE agent_id=?", (bob["id"],))
+    assert panel()["locks"] == []
+    acquire(client, rid, bob, ["/workspace/revoked.py"])
+    client.post(f"/api/rooms/{rid}/agents/{bob['id']}/revoke", headers=headers)
+    assert panel()["locks"] == []
+    acquire(client, rid, alice, ["/workspace/archive.py"])
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "archived"})
+    assert panel()["locks"] == []
+    client.cookies.clear()
+    assert client.get(f"/api/rooms/{rid}", headers=bearer(alice)).status_code == 401
+
+
+def test_operator_lock_list_is_bounded(setup):
+    client, app, _, _, rid, (alice, _) = setup
+    with app.state.db.connect() as conn:
+        conn.executemany("INSERT INTO file_locks VALUES (?,?,?,?)", [
+            (f"/workspace/file-{index:04}.py", str(uuid4()), alice["id"], time.time()+300)
+            for index in range(501)])
+    result = client.get(f"/api/rooms/{rid}").json()["file_locks"]
+    assert len(result["locks"]) == 500 and result["truncated"]

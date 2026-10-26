@@ -10,6 +10,9 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID, uuid4
 
+import httpx
+from .receipt_client import report
+
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -70,6 +73,7 @@ def request_json(room_url: str, token: str, suffix: str, body=None):
 def create_mcp_server():
     delivery = None
     fallback_reason = None
+    receipts_enabled = False
 
     @asynccontextmanager
     async def lifespan(_server):
@@ -93,12 +97,14 @@ def create_mcp_server():
         "If Claude reports fallback, call wait_for_messages from its saved cursor. "
         "If Codex delivery retries or stops, rejoin without session_id and poll from your last processed cursor. "
         "Inbox delivery includes only messages addressed to you or everyone, excluding your own posts. "
-        "Use read_history(scope=all) for wider context; history cursors never replace the live inbox cursor. "
+        "Use read_thread(message_id) for one discussion or read_history(scope=all) for wider context; history cursors never replace the live inbox cursor. "
         "Broadcast shared decisions and blockers to @everyone. Before editing shared files, acquire_file_locks "
         "for every affected path, edit only after acquired=true, renew before expiry and release after finishing. "
         "On conflict work elsewhere; on expiry or renewal failure stop editing and reacquire, then reread files. "
         "These are cooperative leases: direct filesystem writes bypass them. "
-        "Acknowledge operator requests briefly before lengthy work. Respect room pause/archive status. Tokens stay private."),
+        "For tracked operator requests (receipt_requested=true), call acknowledge_message(message_id) after reading, then send the answer "
+        "with reply_to=message_id. Linked replies mark Answered: keep progress acknowledgements unlinked. "
+        "Respect room pause/archive status. Tokens stay private."),
         log_level="WARNING", lifespan=lifespan)
     connection = None
     join_lock = asyncio.Lock()
@@ -125,7 +131,7 @@ def create_mcp_server():
         addressed Codex session must use the same local/shared Codex server.
         The token is held in this process's memory and is never returned by this tool.
         """
-        nonlocal connection, delivery, fallback_reason
+        nonlocal connection, delivery, fallback_reason, receipts_enabled
         url = validate_room_url(room_url)
         if any(char.isspace() for char in access_token):
             raise ToolError("The access token must contain no whitespace.")
@@ -145,6 +151,7 @@ def create_mcp_server():
                 await delivery.stop()
                 delivery = None
             connection = (url, access_token)
+            receipts_enabled = result.get("capabilities", {}).get("message_receipts", False)
             fallback_reason = None
             if mode == "codex":
                 received = result.get("delivery", {})
@@ -160,14 +167,28 @@ def create_mcp_server():
                 else:
                     try:
                         delivery = ClaudeDelivery(url, access_token, result["handle"], result["next_cursor"],
-                                                  ctx.session.send_notification)
+                                                  ctx.session.send_notification, receipts_enabled=receipts_enabled)
                         delivery.start()
                     except (OSError, ValueError, KeyError):
                         fallback_reason = "Cannot open Claude delivery checkpoint, or another listener holds this invitation. Use polling and check COVENANT_STATE_DIR."
                 result["delivery"] = delivery.status() if delivery else {
                     "mode": "polling", "state": "fallback", "last_error": fallback_reason,
                     "polling_recommended": True, "cursor": 0}
+        await report_received(result, "catch_up")
+        if receipts_enabled:
+            status = delivery.status() if delivery else {"mode": "polling", "state": "fallback" if fallback_reason else "joined", "last_error": fallback_reason}
+            async with httpx.AsyncClient(headers={"Authorization": "Bearer " + access_token}, trust_env=False) as client:
+                await report(client, url, "/delivery-status", {"mode": status["mode"], "state": status["state"], "last_error": status.get("last_error")})
         return result
+
+    async def report_received(result, mode):
+        if not receipts_enabled:
+            return
+        ids = [m["id"] for m in result.get("messages", []) if m.get("receipt_requested")]
+        if ids:
+            url, token = current_connection()
+            async with httpx.AsyncClient(headers={"Authorization": "Bearer " + token}, trust_env=False) as client:
+                await report(client, url, "/message-receipts", {"message_ids": ids, "stage": "delivered", "mode": mode})
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
     async def delivery_status() -> dict:
@@ -203,10 +224,16 @@ def create_mcp_server():
             url, token = current_connection()
             # An event already in Claude's queue must not bypass revocation or archive.
             page = await asyncio.to_thread(request_json, url, token,
-                "/messages?" + urlencode({"after": delivery.scan_cursor, "timeout": 0}))
+                "/messages?" + urlencode({"after": delivery.scan_cursor, "timeout": 0, "transport": "claude"}))
             if page["room_status"] == "archived":
                 await delivery.stop()
                 raise ToolError("Conversation archived; channel delivery ended.")
+            # Persist the explicit model receipt before advancing the durable channel cursor.
+            mid = next((mid for mid, item in delivery.pending.items()
+                        if item["receipt"] == str(receipt) and item.get("receipt_requested", False)), None)
+            if receipts_enabled and mid is not None:
+                await asyncio.to_thread(request_json, url, token, "/message-receipts", {
+                    "message_ids": [mid], "stage": "acknowledged", "mode": "claude"})
             try:
                 return delivery.acknowledge(str(receipt))
             except OSError:
@@ -217,15 +244,31 @@ def create_mcp_server():
     async def send_message(
         text: Annotated[str, Field(min_length=1, max_length=16000)],
         client_message_id: Annotated[str, Field(min_length=1, max_length=128)],
+        reply_to: Annotated[int | None, Field(ge=1, le=2**63 - 1)] = None,
     ) -> dict:
         """Post text beginning with one or more recipients, e.g. @alice @operator FYI.
         Use @handle, @operator, or @everyone. Supply a new unique
         client_message_id for each new message, and reuse the SAME ID for retries.
-        Sender identity comes from the token supplied to join_room.
+        Sender identity comes from the token supplied to join_room. Use reply_to to
+        join any existing message's thread in this room. Replying to a tracked operator
+        request addressed to you, with @operator or @everyone, marks it Answered;
+        keep brief progress acknowledgements unlinked. Use read_thread for context.
         """
         url, token = current_connection()
-        return await asyncio.to_thread(request_json, url, token, "/messages", {
-            "text": text, "client_message_id": client_message_id})
+        body = {"text": text, "client_message_id": client_message_id}
+        if reply_to is not None:
+            body["reply_to"] = reply_to
+        return await asyncio.to_thread(request_json, url, token, "/messages", body)
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
+    async def acknowledge_message(message_id: Annotated[int, Field(ge=1, le=2**63 - 1)]) -> dict:
+        """Explicitly acknowledge an operator message after reading it, before lengthy
+        work. This records reception, not task completion. Answer separately with
+        send_message(reply_to=message_id). Claude channel receipts also acknowledge.
+        """
+        url, token = current_connection()
+        return await asyncio.to_thread(request_json, url, token, "/message-receipts", {
+            "message_ids": [message_id], "stage": "acknowledged"})
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
     async def wait_for_messages(
@@ -245,7 +288,24 @@ def create_mcp_server():
         params = {"after": after, "timeout": timeout}
         if revision is not None:
             params["revision"] = revision
-        return await asyncio.to_thread(request_json, url, token, "/messages?" + urlencode(params))
+        result = await asyncio.to_thread(request_json, url, token, "/messages?" + urlencode(params))
+        await report_received(result, "polling")
+        return result
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
+    async def read_thread(
+        message_id: Annotated[int, Field(ge=1, le=2**63 - 1)],
+        after: Annotated[int, Field(ge=0, le=2**63 - 1)] = 0,
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+    ) -> dict:
+        """Fetch one discussion's root and replies, including replies addressed to other
+        room participants. Any message in that thread can identify it. Replies are in
+        chronological order. Use this result's next_cursor as after for more thread
+        replies; NEVER replace your live inbox cursor with this separate thread cursor.
+        """
+        url, token = current_connection()
+        return await asyncio.to_thread(request_json, url, token,
+            f"/threads/{message_id}?" + urlencode({"after": after, "limit": limit}))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
     async def read_history(
