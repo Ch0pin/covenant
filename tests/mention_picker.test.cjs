@@ -9,7 +9,7 @@ function setup() {
   const nodes = new Map();
   function node() {
     return {value: '', selectionStart: 0, selectionEnd: 0, maxLength: 16000, children: [], attrs: {}, listeners: {},
-      hidden: true, disabled: false, setAttribute(k,v) {this.attrs[k]=v;}, removeAttribute(k) {delete this.attrs[k];},
+      hidden: true, disabled: false, style:{}, scrollHeight:54, setAttribute(k,v) {this.attrs[k]=v;}, removeAttribute(k) {delete this.attrs[k];},
       append(...children) {this.children.push(...children);}, replaceChildren() {this.children=[];},
       addEventListener(k,fn) {this.listeners[k]=fn;}, scrollIntoView() {}, focus() {},
       setSelectionRange(start,end) {this.selectionStart=start;this.selectionEnd=end;}};
@@ -18,7 +18,7 @@ function setup() {
   const input = $('#message-text');
   const ctx = vm.createContext({$, document: {activeElement: input}, state: {room:{id:'room'},agents:[
     {handle:'dynamic_code_reviewer'}, {handle:'static_code_reviewer'}, {handle:'disabled_agent',revoked:1}
-  ]}, element: (tag,cls,text) => Object.assign(node(),{textContent:text}), senderAvatar: node});
+  ]}, element: (tag,cls,text) => Object.assign(node(),{textContent:text}), senderAvatar: node, senderColors:()=>({foreground:'teal'}), CovenantComposer:require('../covenant/static/composer.js')});
   const start = source.indexOf('const mentionState =');
   vm.runInContext(source.slice(start,source.indexOf('$("#message-form").addEventListener("submit"',start)),ctx);
   const keyStart = source.indexOf('$("#message-text").addEventListener("keydown"',start);
@@ -34,22 +34,22 @@ test('filters recipients, excludes revoked agents, and Tab completes without sen
   assert.equal(f.$('#mention-options').children.length,4);
   f.type('@DYN'); assert.equal(f.$('#mention-options').children.length,1);
   assert.equal(f.key('Tab').prevented,true);
-  assert.equal(f.input.value,'@dynamic_code_reviewer ');
+  assert.equal(f.input.value,''); assert.equal(f.ctx.composeMessage(),'@dynamic_code_reviewer');
   assert.equal(f.input.selectionStart,f.input.value.length);
   assert.equal(f.$('#mention-picker').hidden,true); assert.equal(f.sends(),0);
 });
 
 test('completion preserves existing text and replaces the entire token at the caret',()=>{
   const f=setup(); f.type('@dyn_old Please review',4); f.key('Tab');
-  assert.equal(f.input.value,'@dynamic_code_reviewer Please review');
-  assert.equal(f.input.selectionStart,'@dynamic_code_reviewer '.length);
+  assert.equal(f.input.value,'Please review'); assert.equal(f.ctx.composeMessage(),'@dynamic_code_reviewer\nPlease review');
+  assert.equal(f.input.selectionStart,0);
   f.type('Hello @sta'); f.key('Enter');
   assert.equal(f.input.value,'Hello @static_code_reviewer '); assert.equal(f.sends(),0);
 });
 
 test('arrow keys choose a recipient, Escape dismisses, and normal Tab is preserved',()=>{
   const f=setup(); f.type('@'); f.key('ArrowDown'); f.key('Tab');
-  assert.equal(f.input.value,'@static_code_reviewer ');
+  assert.equal(f.input.value,''); assert.equal(f.ctx.composeMessage(),'@static_code_reviewer');
   f.type('@'); f.key('Escape'); assert.equal(f.$('#mention-picker').hidden,true);
   assert.equal(f.key('Tab').prevented,undefined);
   f.type('@dy'); assert.equal(f.key('Tab',{shiftKey:true}).prevented,undefined);
@@ -67,7 +67,15 @@ test('ignores email addresses, absent matches, text selections, and archived com
 
 test('click completion works and respects the message length limit',()=>{
   const f=setup();f.type('@eve');f.$('#mention-options').children[0].onclick();
-  assert.equal(f.input.value,'@everyone ');
+  assert.equal(f.input.value,''); assert.equal(f.ctx.composeMessage(),'@everyone');
   f.input.maxLength=5;f.type('@dyn');f.key('Tab');assert.equal(f.input.value,'@dyn');
   assert.match(f.$('#message-error').textContent,/too long/);
+});
+
+test('chip removal preserves the draft and a pasted duplicate does not duplicate routing',()=>{
+  const f=setup();f.type('@everyone @everyone Draft text');
+  assert.equal(f.$('#recipient-chips').children.length,1);
+  assert.equal(f.ctx.composeMessage(),'@everyone\nDraft text');
+  f.$('#recipient-chips').children[0].children[1].onclick();
+  assert.equal(f.input.value,'Draft text');assert.equal(f.ctx.composeMessage(),'Draft text');
 });

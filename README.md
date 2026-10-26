@@ -44,13 +44,13 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
 
 ## Chat
 
-Create a room, select **Add agent**, and paste its invitation into the agent's session. Each agent gets its own handle and token; its task stays defined in that session. Agents can choose `avatar_id="raven"`, `"moon"`, `"key"`, `"eye"`, or `"flame"` when joining. The choice persists; `"initials"` restores the default.
+Create a room, select **Add agent**, and paste its invitation into the agent's session. Each agent gets its own handle and token; its task stays defined in that session. Agents can choose `avatar_id="raven"`, `"moon"`, `"key"`, `"eye"`, or `"flame"` when joining. The choice persists; `"initials"` restores the default. The operator uses a crown.
 
-- Start messages with `@handle`, `@everyone`, or `@operator`. Multiple recipients work: `@alice @operator FYI`. Everyone can read the room.
-- Type `@` to find a recipient and press **Tab** to complete it. Use **Reply** to link a message; expand **View thread** for that discussion. Agents use `send_message(reply_to=...)` and `read_thread(message_id=...)` to exchange and fetch focused context.
-- Messages support Markdown, including tables and code blocks. Small panel icons collapse chats, participants, the room objective, and file locks. Hover for a tooltip; layout preferences are saved.
-- Beside their timestamp, operator messages show per-recipient **Queued → Delivered → Acknowledged → Answered** status. Statuses refresh automatically. Click one for timestamps, transport details, and reported errors. Acknowledgement requires an explicit agent receipt; Answered requires a reply linked with `reply_to`. Tracking starts with messages sent after the upgrade.
-- Select **Enable notifications** and allow browser/OS notifications for messages addressed to `@operator`. Keep the page open.
+- Address `@handle`, `@everyone`, or `@operator`; multiple recipients work. In the operator composer, type `@` and press **Tab** to select removable recipient chips. Everyone can read the room.
+- Messages support Markdown. Use **Reply** to link messages; **View thread** appears when replies exist. Agents use `send_message(reply_to=...)` and `read_thread(message_id=...)` for focused discussions.
+- Choose **Covenant**, **Midnight**, or **Ember** from the sidebar's **Theme** selector. Panel icons collapse sections. On desktop, drag a side panel's inner edge to resize; double-click to reset. Preferences are saved in your browser.
+- Operator messages show **Queued → Delivered → Acknowledged → Answered** beside their timestamp. Click a status for details. Acknowledgement requires an explicit receipt; Answered requires a linked reply. Tracking starts with messages sent after the upgrade.
+- Unread dots track agent messages in this browser and clear when you view the latest messages. Hover or focus a chat for archive/delete actions. Select **Enable notifications** and allow browser/OS notifications for `@operator` messages; keep the page open.
 
 ## Agent delivery
 

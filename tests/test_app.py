@@ -54,7 +54,7 @@ def test_join_send_and_shared_history(setup):
     assert result["messages"] == [first]
     assert first["sender"] == "bob" and first["target"] == "alice"
     assert result["next_cursor"] == first["id"]
-    assert client.get(f"/api/rooms/{rid}/messages").json()["messages"] == [first]
+    assert client.get(f"/api/rooms/{rid}/messages").json()["messages"] == [{**first, "has_thread": False}]
     assert alice["token"] in alice["instructions"]
     assert f"https://chat.example.com/{rid}/join" in alice["instructions"]
 
@@ -488,3 +488,14 @@ def test_delivery_schema_upgrade_preserves_existing_data(setup):
         after = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")] for table in before}
     assert before == after
     assert client.get(f"/{rid}/messages?timeout=0", headers=bearer(alice)).json()["messages"] == [message]
+
+
+def test_room_list_unread_cursor_tracks_agent_messages_only(setup):
+    client, _, _, headers, rid, (alice, _) = setup
+    assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == 0
+    first = send(client, rid, alice).json()["id"]
+    client.post(f"/api/rooms/{rid}/messages", headers=headers,
+                json={"text": "@alice Thanks", "client_message_id": str(uuid4())})
+    assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == first
+    second = send(client, rid, alice).json()["id"]
+    assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == second

@@ -84,3 +84,17 @@ def test_thread_pagination_limits(setup, query):
     client, _, _, _, rid, (alice, _) = setup
     mid = send(client, rid, alice).json()["id"]
     assert client.get(f"/{rid}/threads/{mid}?{query}", headers=bearer(alice)).status_code == 422
+
+
+def test_operator_thread_visibility_includes_replies_outside_loaded_page(setup):
+    client, _, _, headers, rid, (alice, bob) = setup
+    root = send(client, rid, alice, "@bob Review this").json()["id"]
+    solo = send(client, rid, alice, "@bob Separate update").json()["id"]
+    before = client.get(f"/api/rooms/{rid}/messages").json()["messages"]
+    assert all(not m["has_thread"] for m in before)
+    child = reply(client, rid, bob, root, "@alice Reviewed").json()["id"]
+    # The reply is outside this history page, but its root still has a thread.
+    history = client.get(f"/api/rooms/{rid}/messages?before={child}").json()["messages"]
+    assert {m["id"]: m["has_thread"] for m in history} == {root: True, solo: False}
+    latest = client.get(f"/api/rooms/{rid}/messages?after={solo}").json()["messages"]
+    assert latest[0]["has_thread"] and latest[0]["reply_to"] == root

@@ -21,7 +21,10 @@ test('renders all five local symbols with initials fallback and operator identit
     f.state.agents=[{handle:'sol',avatar_id}];const a=f.ctx.senderAvatar('sol');
     assert.equal(a.textContent,'SO');assert.equal(a.children.length,0);
   }
-  f.state.agents=[{handle:'operator',avatar_id:'raven'}];assert.equal(f.ctx.senderAvatar('operator').textContent,'OP');
+  f.state.agents=[{handle:'operator',avatar_id:'raven'}];
+  const operator=f.ctx.senderAvatar('operator');
+  assert.equal(operator.dataset.avatar,'crown');assert.equal(operator.children[0].tag,'svg');
+  assert.equal(operator.title,'operator · crown');
 });
 test('updates an existing message avatar when its participant changes selection',()=>{
   const f=fixture();let replacement;

@@ -366,7 +366,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         operator(request)
         with db.connect() as conn:
             rows = conn.execute("""SELECT r.*, (SELECT text FROM messages WHERE room_id=r.id ORDER BY id DESC LIMIT 1) AS preview,
-                (SELECT COUNT(*) FROM agents WHERE room_id=r.id AND revoked=0) AS agent_count
+                (SELECT COUNT(*) FROM agents WHERE room_id=r.id AND revoked=0) AS agent_count,
+                (SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=r.id AND sender!='operator') AS latest_agent_message_id
                 FROM rooms r WHERE (status='archived')=? ORDER BY updated_at DESC""", (archived,))
             return {"rooms": [dict(r) for r in rows]}
 
@@ -477,6 +478,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = envelope(conn, str(room_id), after, before)
             receipts = receipt_rows(conn, str(room_id), [m["id"] for m in result["messages"] if m["sender"] == "operator"])
             for message in result["messages"]:
+                message["has_thread"] = bool(message.get("reply_to") or conn.execute(
+                    "SELECT 1 FROM message_replies WHERE reply_to=? LIMIT 1", (message["id"],)).fetchone())
                 if message["sender"] == "operator":
                     message["receipts"] = receipts.get(str(message["id"]), [])
             return result

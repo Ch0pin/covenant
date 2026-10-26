@@ -7,7 +7,7 @@ function fixture(){
   const nodes=new Map();
   const $=s=>{if(!nodes.has(s))nodes.set(s,{value:'',hidden:true,textContent:'',focus(){this.focused=true;}});return nodes.get(s);};
   const state={room:{id:'one',status:'active'},agents:[{handle:'sol',revoked:false}],pending:{},replyTo:null};
-  const ctx=vm.createContext({$,state});
+  const ctx=vm.createContext({$,state,composerRecipients:[],syncComposer(){}});
   vm.runInContext(source.slice(source.indexOf('function clearReplyTarget'),source.indexOf('async function loadThread')),ctx);
   return {$,state,ctx};
 }
