@@ -218,11 +218,40 @@ function senderColors(handle) {
   const hue = handle === "operator" ? 150 : hash % 360;
   return {foreground: `hsl(${hue}, 65%, 78%)`, background: `hsl(${hue}, 30%, 23%)`};
 }
+const avatarSymbols = Object.freeze({
+  raven: [["path", {d:"M4 18l3-5V9l4-5 5 1 2 3 4 2-5 1-1 5-5 3-7-1Z"}], ["path", {d:"m7 13 5-3-2 6M9 19v2m4-3v3"}], ["circle", {cx:"14",cy:"7",r:".7",fill:"currentColor",stroke:"none"}]],
+  moon: [["path", {d:"M20 15.3A8.5 8.5 0 0 1 8.7 4 8.5 8.5 0 1 0 20 15.3Z"}]],
+  key: [["circle", {cx:"8",cy:"8",r:"4"}], ["path", {d:"m11 11 9 9m-4-4 2-2m0 4 2-2"}]],
+  eye: [["path", {d:"M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"}], ["circle", {cx:"12",cy:"12",r:"3"}]],
+  flame: [["path", {d:"M13 2c1 5-4 6-4 10-2-1-2-3-2-3-4 4-3 12 5 12 7 0 9-7 6-11-1 2-2 2-2 2 1-4-1-7-3-10Z"}], ["path", {d:"M12 15c-3 3-2 6 1 6 3-1 3-3-1-6Z"}]]
+});
+function agentAvatarId(handle) {
+  const choice = handle === "operator" ? "initials" : state.agents.find(agent => agent.handle === handle)?.avatar_id;
+  return Object.hasOwn(avatarSymbols, choice) ? choice : "initials";
+}
 function senderAvatar(handle) {
-  const avatar = element("div", "avatar" + (handle === "operator" ? " operator-avatar" : ""), handle.slice(0, 2).toUpperCase());
+  const choice = agentAvatarId(handle);
+  const avatar = element("div", "avatar" + (handle === "operator" ? " operator-avatar" : ""));
+  avatar.dataset.sender = handle; avatar.dataset.avatar = choice;
+  if (choice === "initials") avatar.textContent = handle.slice(0, 2).toUpperCase();
+  else {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false");
+    for (const [tag, attrs] of avatarSymbols[choice]) {
+      const shape = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [name, value] of Object.entries(attrs)) shape.setAttribute(name, value);
+      svg.append(shape);
+    }
+    avatar.append(svg); avatar.title = `${handle} · ${choice}`;
+  }
   const colors = senderColors(handle);
   avatar.style.color = colors.foreground; avatar.style.backgroundColor = colors.background;
   return avatar;
+}
+function refreshMessageAvatars() {
+  for (const node of $("#messages").querySelectorAll(".avatar[data-sender]")) {
+    if (node.dataset.avatar !== agentAvatarId(node.dataset.sender)) node.replaceWith(senderAvatar(node.dataset.sender));
+  }
 }
 function updateMessageReceipts(article, receipts) {
   let container = article.querySelector(".message-receipts");
@@ -634,7 +663,7 @@ async function refreshCurrent() {
     throw error;
   }
   if (generation !== state.generation || !state.me) return;
-  updateRoom(room); state.agents = room.agents; renderAgents();
+  updateRoom(room); state.agents = room.agents; renderAgents(); refreshMessageAvatars();
   if (!$("#mention-picker").hidden) updateMentions();
   appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor);
   await refreshThreads();

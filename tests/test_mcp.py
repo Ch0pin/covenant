@@ -81,7 +81,8 @@ def test_two_real_stdio_clients_exchange_and_revoke(live_room, tmp_path):
                 "read_history", "acquire_file_locks", "renew_file_locks", "release_file_locks", "list_file_locks", "acknowledge_message", "read_thread"}
             error = await alice.call_tool("wait_for_messages", {"after": 0, "timeout": 0})
             assert error.is_error
-            joined_a = result_data(await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"]}))
+            joined_a = result_data(await alice.call_tool("join_room", {"room_url": url, "access_token": tokens["alice"], "avatar_id": "moon"}))
+            assert joined_a["avatar_id"] == "moon"
             joined_b = result_data(await bob.call_tool("join_room", {"room_url": url, "access_token": tokens["bob"]}))
             assert joined_a["handle"] == "alice" and joined_b["handle"] == "bob"
             assert tokens["alice"] not in json.dumps(joined_a)

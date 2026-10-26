@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS agents (
     joined_at REAL, last_seen REAL, created_at REAL NOT NULL,
     UNIQUE(room_id, handle)
 );
+CREATE TABLE IF NOT EXISTS agent_avatars (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    avatar_id TEXT NOT NULL CHECK(avatar_id IN ('raven','moon','key','eye','flame'))
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL REFERENCES rooms(id),
     sender TEXT NOT NULL, target TEXT NOT NULL, text TEXT NOT NULL,

@@ -20,6 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
+from .avatars import AvatarId
 from .db import Database
 from .instructions import connection_instructions
 from .file_locks import register_file_lock_routes, visible_file_locks
@@ -59,6 +60,7 @@ class NewAgent(Input):
 
 
 class JoinRequest(Input):
+    avatar_id: AvatarId | None = None
     history_limit: int = Field(default=20, ge=0, le=50)
     history_scope: Literal["inbox", "all"] = "inbox"
     session_id: UUID | None = None
@@ -159,10 +161,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return dict(row)
 
     def participants(conn, room_id, include_revoked=False):
-        query = "SELECT id, handle, joined_at, last_seen, revoked FROM agents WHERE room_id=?"
+        query = """SELECT a.id,a.handle,a.joined_at,a.last_seen,a.revoked,
+            COALESCE(v.avatar_id,'initials') AS avatar_id FROM agents a
+            LEFT JOIN agent_avatars v ON v.agent_id=a.id WHERE a.room_id=?"""
         if not include_revoked:
-            query += " AND revoked=0"
-        return [dict(r) for r in conn.execute(query + " ORDER BY created_at", (room_id,))]
+            query += " AND a.revoked=0"
+        return [dict(r) for r in conn.execute(query + " ORDER BY a.created_at", (room_id,))]
 
     def bump(conn, room_id):
         conn.execute("UPDATE rooms SET revision=revision+1, updated_at=? WHERE id=?",
@@ -496,7 +500,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(409, "Restore this conversation before enabling delivery")
             conn.execute("UPDATE agents SET joined_at=COALESCE(joined_at,?),last_seen=? WHERE id=?",
                          (now, now, identity["id"]))
-            if identity["joined_at"] is None:
+            selected = conn.execute("SELECT avatar_id FROM agent_avatars WHERE agent_id=?", (identity["id"],)).fetchone()
+            avatar_id = selected["avatar_id"] if selected else "initials"
+            avatar_changed = body.avatar_id is not None and body.avatar_id != avatar_id
+            if avatar_changed:
+                if room(conn, rid)["status"] == "archived":
+                    raise HTTPException(409, "Restore the conversation before changing avatars")
+                avatar_id = body.avatar_id
+                if avatar_id == "initials":
+                    conn.execute("DELETE FROM agent_avatars WHERE agent_id=?", (identity["id"],))
+                else:
+                    conn.execute("""INSERT INTO agent_avatars VALUES (?,?) ON CONFLICT(agent_id)
+                        DO UPDATE SET avatar_id=excluded.avatar_id""", (identity["id"], avatar_id))
+            if identity["joined_at"] is None or avatar_changed:
                 bump(conn, rid)
             latest = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=?", (rid,)).fetchone()[0]
             result = envelope(conn, rid, after=latest)
@@ -504,7 +520,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result.pop("has_more")
             result.update(messages=catch_up["messages"], history_truncated=catch_up["has_more"],
                           history_scope=body.history_scope, next_before=catch_up["next_before"],
-                          handle=identity["handle"])
+                          handle=identity["handle"], avatar_id=avatar_id)
             result["capabilities"] = {"message_receipts": True}
             conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
                 ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",

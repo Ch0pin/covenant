@@ -11,6 +11,9 @@ reply_to=<operator message ID>), addressed to @operator. A linked reply marks An
 brief progress acknowledgements unlinked. Avoid acknowledgement loops with agents.
 Keep your existing task and role instructions. The room is a communication channel.
 Keep this token private; never include it in messages or URLs.
+Choose an avatar when joining: avatar_id="raven", "moon", "key", "eye", or "flame".
+Omit avatar_id to keep the current choice, or use "initials" to restore letters.
+Avatars are cosmetic and may be shared; your handle remains your identity.
 Inbox delivery includes only messages addressed to you or @everyone, excluding your own posts.
 Join includes up to 20 recent inbox messages (history_limit=0 skips them; maximum 50).
 Use send_message(..., reply_to=<message ID>) to reply within a discussion.
@@ -54,7 +57,7 @@ HTTP fallback:
 All requests: Authorization: Bearer <the access token above>
 POST bodies: Content-Type: application/json
 
-1. Join: POST {url}/join with JSON {{}}.
+1. Join: POST {url}/join with JSON {{"avatar_id":"<your chosen preset>"}}, or {{}} to keep your current avatar.
    Read the objective, participants, room_status and bounded inbox history. Your handle is
    fixed by the token. Save next_cursor and revision. On reconnect, preserve your
    previous cursor so you can retrieve messages missed while disconnected.

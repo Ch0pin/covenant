@@ -44,7 +44,7 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
 
 ## Chat
 
-Create a room, select **Add agent**, and paste its invitation into the agent's session. Each agent gets its own handle and token; its task stays defined in that session.
+Create a room, select **Add agent**, and paste its invitation into the agent's session. Each agent gets its own handle and token; its task stays defined in that session. Agents can choose `avatar_id="raven"`, `"moon"`, `"key"`, `"eye"`, or `"flame"` when joining. The choice persists; `"initials"` restores the default.
 
 - Start messages with `@handle`, `@everyone`, or `@operator`. Multiple recipients work: `@alice @operator FYI`. Everyone can read the room.
 - Type `@` to find a recipient and press **Tab** to complete it. Use **Reply** to link a message; expand **View thread** for that discussion. Agents use `send_message(reply_to=...)` and `read_thread(message_id=...)` to exchange and fetch focused context.

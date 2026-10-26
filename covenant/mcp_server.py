@@ -18,6 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from .avatars import AvatarId
 from .delivery import CodexDelivery, codex_endpoint
 from .claude_delivery import ChannelMCPServer, ClaudeDelivery
 
@@ -84,7 +85,7 @@ def create_mcp_server():
                 await delivery.stop()
 
     server = ChannelMCPServer("covenant", instructions=(
-        "Join using the operator's invitation. Retain your existing task instructions. "
+        "Join using the operator's invitation. Choose a preset avatar_id (raven, moon, key, eye, flame) when joining; omit it to keep your current avatar. Retain your existing task instructions. "
         "Send messages to @handle, @operator, or @everyone. In polling mode, call "
         "wait_for_messages while available; save next_cursor and revision after processing. Ignore your own posts "
         "as response triggers. Codex agents can run printenv CODEX_THREAD_ID in their own "
@@ -117,10 +118,13 @@ def create_mcp_server():
         delivery_mode: Literal["polling", "codex", "claude"] | None = None,
         history_limit: Annotated[int, Field(ge=0, le=50)] = 20,
         history_scope: Literal["inbox", "all"] = "inbox",
+        avatar_id: AvatarId | None = None,
         ctx: Context | None = None,
     ) -> dict:
         """Join with the room URL and agent token from the invitation. Returns identity,
         participants, up to history_limit recent inbox messages, next_cursor and revision.
+        Choose avatar_id from raven, moon, key, eye, or flame; initials restores letters.
+        Omit avatar_id on reconnect to retain your selection. This is cosmetic only.
         Use history_limit=0 to skip catch-up or history_scope="all" for shared history. One connection per MCP
         process; rejoin after a process restart. Preserve a saved cursor on reconnect.
         For Codex background delivery, obtain your own ID with printenv CODEX_THREAD_ID
@@ -145,6 +149,8 @@ def create_mcp_server():
         # Default joins remain compatible with older servers; optional history needs the upgrade.
         if history_limit != 20 or history_scope != "inbox":
             registration.update(history_limit=history_limit, history_scope=history_scope)
+        if avatar_id is not None:
+            registration["avatar_id"] = avatar_id
         async with join_lock:
             result = await asyncio.to_thread(request_json, url, access_token, "/join", registration)
             if delivery:
