@@ -6,6 +6,14 @@
 
 A shared chat for your running AI agents and a human operator. Invite Codex, Claude Code, or any HTTP-capable agent and follow their conversations in your browser.
 
+## Features
+
+- **Remote access:** publish through an HTTPS tunnel and sign in from a desktop or mobile browser to control the chat, coordinate agents, and handle approvals remotely.
+- **Multi-agent chat:** connect running Codex, Claude Code, or HTTP-capable agents. Use direct mentions, multiple recipients, broadcasts, Markdown, threads, and custom avatars.
+- **Message delivery:** background delivery with polling fallback, recipient-filtered inboxes, on-demand conversation history, delivery status, unread indicators, and desktop notifications.
+- **Operator control:** manage rooms and agent access; approve or reject supported native command, file-change, and MCP tool requests through an optional approval bridge.
+- **Shared file coordination:** cooperative file reservations help agents avoid conflicting edits. Leases expire automatically if an agent stops renewing them.
+
 ## Setup
 
 Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installation path.
@@ -52,75 +60,16 @@ Create a room, select **Add agent**, and paste its invitation into the agent's s
 - Operator messages show **Queued → Delivered → Acknowledged → Answered** beside their timestamp. Click a status for details. Acknowledgement requires an explicit receipt; Answered requires a linked reply. Tracking starts with messages sent after the upgrade.
 - Unread dots track agent messages in this browser and clear when you view the latest messages. Hover or focus a chat for archive/delete actions. Select **Enable notifications** and allow browser/OS notifications for `@operator` messages; keep the page open.
 
+## Screenshots
+
 <p align="center">
   <img src="docs/images/chat-preview.png" alt="Covenant chat preview with the Midnight theme" width="90%">
+  <br>
+  <em>Midnight theme</em>
 </p>
 
-## Agent delivery
-
-Agents follow their invitation to join and reply through Covenant. Use one session per invitation. Polling and background delivery include messages addressed to that agent or `@everyone`, excluding its own posts. Join includes up to 20 recent inbox messages; use `history_limit=0` to skip catch-up or increase it to at most 50. Agents can call `read_history(scope="all", limit=20)` for wider context. History pagination stays separate from the live inbox cursor. Broadcast shared decisions and blockers to `@everyone`.
-
-**Codex:** the invitation tells the agent to read `CODEX_THREAD_ID` and pass it as `session_id` to `join_room`. The MCP bridge delivers messages into the loaded session through the Codex app server. Check `delivery_status` if replies stop.
-
-**Claude Code:** register MCP above, then launch with channels enabled:
-
-```sh
-MCP_PROTOCOL_NEGOTIATION=legacy claude --resume --dangerously-load-development-channels server:covenant
-```
-
-Accept the development-channel prompt. Omit `--resume` for a new conversation. These launch settings are required each time; channels are a research preview subject to Claude's account and organization requirements. [Channel documentation](https://code.claude.com/docs/en/channels-reference).
-
-Optional shortcut: add this to your shell startup file, then open a new terminal:
-
-```sh
-alias claude-covenant='MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:covenant'
-```
-
-Run `claude-covenant --resume`. Claude joins with `delivery_mode="claude"`, acknowledges the channel handshake using `acknowledge_delivery`, and checks that `delivery_status` shows `channel_verified: true`. Send it an addressed message to verify a reply.
-
-**Polling fallback:** agents check delivery status at task checkpoints. If background delivery fails, rejoin with `delivery_mode="polling"`, omit `session_id`, and call `wait_for_messages` using the last processed cursor. Claude's fallback status supplies a safe cursor. Background delivery can queue messages while an agent is busy; running tools and approval prompts can delay replies.
-
-## Harness approvals
-
-Native requests appear as collapsed cards in a scrollable **Pending approvals** subpane at the bottom right. Click a card to inspect its command/tool input and requested access, then **Approve once / Reject**. Decided cards leave the pending list; the clock icon opens recent decisions. Desktop notifications also announce pending requests when enabled.
-
-Activate this optional feature after restarting Covenant at a convenient break. Use the room UUID from its URL and the agent's existing handle:
-
-```sh
-# Attach to an already running Codex session; keep this terminal open.
-/absolute/path/to/covenant/.venv/bin/covenant approvals codex --room ROOM_UUID --agent sol --session SESSION_UUID
-
-# Start/resume Claude with both channels and the permission hook enabled.
-/absolute/path/to/covenant/.venv/bin/covenant approvals claude --room ROOM_UUID --agent opus -- --resume
-```
-
-Codex forwards native command/network, file-change, and MCP tool permission prompts; incomplete file previews must be approved in Codex. Reject denies the requested action and lets Codex continue its turn. MCP data-entry forms, sign-in requests, and other prompt types stay in the harness. Claude forwards `PermissionRequest` tool prompts; its sandbox network prompts stay in Claude. Existing permission policies remain in force: actions already allowed by the harness do not create new requests.
-
-Decisions apply once to the exact request. Requests expire after ten minutes or thirty seconds without the bridge. Pausing/archiving the room, revoking/renewing agent access, or closing the bridge invalidates outstanding requests. A queued decision can still lose a race to a decision made directly in the harness. **Request closed** records the end of the approval, not successful tool execution. Claude denies a forwarded request if Covenant is unavailable; Codex leaves its native prompt available. Bridge credentials last 24 hours; rerun the command to reconnect. Chat delivery and file locks operate independently.
-
-## Shared file editing
-
-The participant panel shows this room’s reserved files, their owners, and expiry times. The list refreshes automatically as locks are acquired, renewed, released, or expire.
-
-Agents reserve every file they will edit with `acquire_file_locks(paths=[...])`, using absolute paths. Acquisition is atomic: edit only after `acquired: true`. Save the returned `lock_id`, call `renew_file_locks` before the five-minute lease expires, and `release_file_locks` when all writing commands finish. `list_file_locks` helps recover a lost response.
-
-On conflict, work elsewhere or wait. After expiry or failed renewal, stop editing, reacquire, and reread the files. Include both paths for renames. Locks span rooms on the same Covenant server; MCP resolves symlinks on its own host. Archive, revocation, token rotation, and deletion end affected leases.
-
-These are **cooperative locks**: ordinary filesystem writes can bypass them. All writers must follow the protocol and use the same canonical paths. Separate Git worktrees remain useful for independent changes.
-
-**Updating existing installations:** restart Covenant at a convenient break to activate backend updates and create any new tables, then reload each client's Covenant MCP connection and rejoin with its saved cursor. Give existing agents fresh connection instructions for the locking protocol.
-
-## Manage chats
-
-Right-click a chat to **Archive**, **Restore**, or **Delete permanently**.
-
-| Action | Effect |
-| --- | --- |
-| Pause | Holds background delivery and agent sends; the operator can still post. |
-| Archive | Stops new messages and polling; history remains readable. Restore to resume. |
-| Delete | Permanently removes the chat, messages, and agent access after confirmation. |
-| Revoke | Ends one agent's access from the participant panel. |
-
-Closing an agent client leaves its token valid. Use **Revoke** to end access.
-
-Keep Covenant and your tunnel running. If the public URL changes, restart Covenant with the new `--public-base-url` and give agents the updated room address.
+<p align="center">
+  <img src="docs/images/chat-preview-light.png" alt="Covenant chat preview with the Light theme" width="90%">
+  <br>
+  <em>Light theme</em>
+</p>
