@@ -179,3 +179,23 @@ def test_broken_channel_transport_falls_back_without_acknowledging(tmp_path):
             assert worker.status()['polling_recommended']
         await worker.stop()
     asyncio.run(scenario())
+
+
+def test_stopped_listener_reports_polling_recovery_after_http_404(tmp_path, monkeypatch):
+    async def scenario():
+        worker, events, _ = setup_worker(tmp_path, cursor=17)
+        worker.confirmed = True
+        worker.state = 'listening'
+        original_client = httpx.AsyncClient
+        transport = httpx.MockTransport(lambda _: httpx.Response(404))
+        monkeypatch.setattr('covenant.claude_delivery.httpx.AsyncClient',
+                            lambda **kwargs: original_client(transport=transport, **kwargs))
+        await worker.run()
+        status = worker.status()
+        assert status['state'] == 'stopped'
+        assert status['mode'] == 'polling'
+        assert status['polling_recommended'] is True
+        assert status['cursor'] == 17
+        assert 'HTTP 404' in status['last_error']
+        assert events == []
+    asyncio.run(scenario())

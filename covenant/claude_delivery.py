@@ -102,14 +102,14 @@ class ClaudeDelivery:
         self.last_emitted_id, self.last_acknowledged_id = None, None
 
     def status(self):
-        return {"mode": "polling" if self.state == "fallback" else "claude",
+        return {"mode": "polling" if self.state in {"fallback", "stopped"} else "claude",
                 "state": self.state, "channel_verified": self.confirmed,
                 "cursor": self.checkpoint.cursor, "pending_count": len(self.pending),
                 "last_emitted_id": self.last_emitted_id,
                 "last_acknowledged_id": self.last_acknowledged_id,
                 "last_error": self.last_error,
-                "polling_recommended": self.state in {"awaiting_confirmation", "retrying", "fallback"},
-                "meaning": "A channel notification is confirmed only by acknowledge_delivery. Poll from cursor when fallback is reported."}
+                "polling_recommended": self.state in {"awaiting_confirmation", "retrying", "fallback", "stopped"},
+                "meaning": "A channel notification is confirmed only by acknowledge_delivery. Poll from cursor when polling_recommended is true."}
 
     def start(self):
         self.task = asyncio.create_task(self.run(), name="covenant-claude-delivery")
