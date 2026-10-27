@@ -144,3 +144,13 @@ dialog{background:var(--panel);border-color:var(--line)}
 /* Pending decisions remain visible on the panel's collapsed entry points. */
 #reopen-participants,#toggle-participants,#toggle-approvals,#mobile-details{position:relative}
 [data-approval-pending="true"]::after{content:"";position:absolute;top:2px;right:2px;width:9px;height:9px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 2px var(--sidebar-bg);pointer-events:none}
+
+.password-field{position:relative}
+.password-field input{padding-right:54px}
+.login-card .password-toggle{position:absolute;right:2px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:44px;height:44px;min-height:44px;margin:0;padding:10px;border:0;color:var(--muted)}
+.password-toggle svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.password-toggle[aria-pressed="false"] .password-eye-slash{display:none}
+
+.scroll-bottom-anchor{position:relative;height:0;flex-shrink:0;z-index:4}
+.back-to-bottom{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);max-width:calc(100% - 24px);min-height:36px;padding:8px 14px;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--accent);box-shadow:0 3px 12px #0002;font-size:12px;white-space:nowrap}
+@media(max-width:900px){.back-to-bottom{min-height:44px;border-radius:22px}}

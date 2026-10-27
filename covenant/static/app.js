@@ -132,6 +132,8 @@ $("#toggle-objective").onclick = () => togglePanel("objective");
 $("#toggle-file-locks").onclick = () => togglePanel("file-locks");
 applyPanelPreferences();
 function showLogin() {
+  setPasswordVisible(false);
+  $("#back-to-bottom").hidden = true;
   resetComposer(); clearReplyTarget();
   hideMentions();
   resetNotifications();
@@ -218,8 +220,16 @@ async function enterWorkspace() {
     catch (error) {toast(error.message);}
   }
 }
+function setPasswordVisible(visible) {
+  $("#login-password").type = visible ? "text" : "password";
+  const button = $("#toggle-password"), label = visible ? "Hide password" : "Show password";
+  button.setAttribute("aria-pressed", String(visible));
+  button.setAttribute("aria-label", label); button.title = label;
+}
+$("#toggle-password").onclick = () => setPasswordVisible($("#login-password").type === "password");
 $("#login-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const form = event.currentTarget; const button = form.querySelector("button"); button.disabled = true;
+  event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); button.disabled = true;
+  setPasswordVisible(false);
   $("#login-error").textContent = "";
   try {const data = await api("/api/login", {method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form)))}); state.csrf = data.csrf_token; form.password.value = ""; await enterWorkspace();}
   catch (error) {$("#login-error").textContent = error.message;}
@@ -304,7 +314,26 @@ async function selectRoom(id) {
   history.replaceState(null, "", `/${id}`); scrollBottom(); markCurrentRoomRead(); applyPanelWidths();
   globalThis.CovenantMobile?.roomSelected();
 }
-function scrollBottom() {const box = $("#message-scroll"); box.scrollTop = box.scrollHeight;}
+let pendingScrollActivity = false;
+function updateScrollBottomButton() {
+  const box = $("#message-scroll");
+  const away = Boolean(state.me && state.room && box.scrollHeight - box.scrollTop - box.clientHeight >= 100);
+  $("#back-to-bottom").hidden = !away;
+  if (!away) pendingScrollActivity = false;
+  $("#scroll-new-activity").hidden = !pendingScrollActivity;
+}
+function scrollBottom() {
+  const box = $("#message-scroll"); box.scrollTop = box.scrollHeight;
+  updateScrollBottomButton();
+}
+$("#back-to-bottom").onclick = () => {
+  scrollBottom(); markCurrentRoomRead();
+  $("#message-scroll").focus({preventScroll: true});
+};
+$("#message-scroll").addEventListener("scroll", updateScrollBottomButton, {passive: true});
+const scrollBottomObserver = new ResizeObserver(updateScrollBottomButton);
+scrollBottomObserver.observe($("#message-scroll"));
+scrollBottomObserver.observe($("#messages"));
 function senderColors(handle) {
   let hash = 0;
   for (const char of handle) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;
@@ -529,15 +558,22 @@ function renderMessage(message, inThread = false) {
   return article;
 }
 function appendMessages(messages) {
+  let added = false;
   const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
   for (const message of messages) {
-    if (!$("#messages").querySelector(`:scope > [data-id="${message.id}"]`)) $("#messages").append(renderMessage(message));
+    if (!$("#messages").querySelector(`:scope > [data-id="${message.id}"]`)) {
+      $("#messages").append(renderMessage(message)); added = true;
+    }
     if (!state.first) state.first = message.id;
   }
   refreshThreadControls();
   groupMessages($("#messages"));
   $("#no-messages").hidden = $("#messages").children.length > 0;
   if (stick) scrollBottom();
+  else {
+    if (added) pendingScrollActivity = true;
+    updateScrollBottomButton();
+  }
 }
 $("#load-older").onclick = async () => {
   const generation = state.generation, room = state.room;
