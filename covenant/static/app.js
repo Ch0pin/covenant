@@ -108,8 +108,12 @@ function applyPanelPreferences() {
   $("#toggle-participant-list").disabled = !state.room;
   $("#toggle-objective").disabled = !state.room?.objective;
   $("#toggle-file-locks").disabled = !state.room;
+  globalThis.CovenantMobile?.sync();
 }
 function togglePanel(name) {
+  if (globalThis.CovenantMobile?.isMobile && ["conversations", "participants"].includes(name)) {
+    globalThis.CovenantMobile.togglePanel(name); return;
+  }
   const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
   closeRoomMenu(); hideMentions();
   panelPreferences[name] = !panelPreferences[name]; applyPanelPreferences();
@@ -131,7 +135,7 @@ function showLogin() {
   resetComposer(); clearReplyTarget();
   hideMentions();
   resetNotifications();
-  closeRoomMenu(); state.me = null; state.csrf = ""; state.room = null; state.generation++; applyPanelPreferences();
+  closeRoomMenu(); state.me = null; window.dispatchEvent(new Event("covenant-login-change")); state.csrf = ""; state.room = null; state.generation++; applyPanelPreferences();
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
   $("#messages").replaceChildren(); $("#room-list").replaceChildren(); $("#agent-list").replaceChildren();
   $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
@@ -281,7 +285,7 @@ function updateRoom(room) {
   $("#add-agent").disabled = room.status === "archived";
   if (room.status === "archived") hideMentions();
   $("#message-text").disabled = room.status === "archived"; $("#send-message").disabled = room.status === "archived";
-  $("#composer-hint").textContent = room.status === "archived" ? "Restore this conversation to send messages" : room.status === "paused" ? "Agents are paused. You can still send instructions." : "Enter to send · Shift+Enter for a new line";
+  $("#composer-hint").textContent = room.status === "archived" ? "Restore this conversation to send messages" : room.status === "paused" ? "Agents are paused. You can still send instructions." : globalThis.CovenantMobile?.isMobile ? "Tap the arrow to send · Return for a new line" : "Enter to send · Shift+Enter for a new line";
   syncComposer(false);
 }
 async function selectRoom(id) {
@@ -298,6 +302,7 @@ async function selectRoom(id) {
   $("#load-older").hidden = !messages.has_more;
   appendMessages(messages.messages); renderAgents(); renderRooms();
   history.replaceState(null, "", `/${id}`); scrollBottom(); markCurrentRoomRead(); applyPanelWidths();
+  globalThis.CovenantMobile?.roomSelected();
 }
 function scrollBottom() {const box = $("#message-scroll"); box.scrollTop = box.scrollHeight;}
 function senderColors(handle) {
@@ -699,7 +704,7 @@ async function renewAgent(agent) {
 }
 const mentionState = {matches: [], index: 0, range: null};
 const composerRecipients = [];
-let recipientSignature = "", composerSizeSignature = "";
+let recipientSignature = "", composerSizeSignature = "", composerFocused = false;
 function recipientHandles() {return [...new Set([...state.agents.filter(a => !a.revoked).map(a => a.handle).sort(), "everyone", "operator"])];}
 function composeMessage() {return CovenantComposer.serialize(composerRecipients, $("#message-text").value).trim();}
 function resetComposer() {composerRecipients.length = 0; $("#message-text").value = ""; syncComposer(false);}
@@ -729,12 +734,24 @@ function syncComposer(extract = true) {
     }
   }
   $("#add-recipient").disabled = input.disabled;
-  const sizeSignature = JSON.stringify([input.value, input.clientWidth]);
+  const scroll = $("#message-scroll"), stick = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+  const expanded = composerFocused || document.activeElement === input || Boolean(input.value || composerRecipients.length || state.replyTo);
+  $("#message-form").setAttribute("data-expanded", String(expanded));
+  const sizeSignature = JSON.stringify([input.value, input.clientWidth, expanded]);
   if (sizeSignature !== composerSizeSignature) {
     composerSizeSignature = sizeSignature;
-    input.style.height = "auto"; input.style.height = Math.min(240, Math.max(56, input.scrollHeight)) + "px";
+    input.style.height = "auto";
+    input.style.height = expanded ? Math.min(240, Math.max(56, input.scrollHeight)) + "px" : "24px";
+    if (stick && state.room) scrollBottom();
   }
 }
+$("#message-form").addEventListener("focusin", () => {composerFocused = true; syncComposer(false);});
+$("#message-form").addEventListener("focusout", event => {
+  if (!$("#message-form").contains(event.relatedTarget)) {composerFocused = false; syncComposer(false);}
+});
+$("#message-form").addEventListener("click", event => {
+  if (event.target === $("#message-form")) $("#message-text").focus();
+});
 $("#add-recipient").onclick = () => {
   const input = $("#message-text"); if (input.disabled) return;
   input.value = "@" + (input.value ? " " + input.value : "");
@@ -826,7 +843,7 @@ $("#message-text").addEventListener("keydown", event => {
     }
     if (event.key === "Escape") {event.preventDefault(); hideMentions(); return;}
   }
-  if (event.key === "Enter" && !event.shiftKey) {event.preventDefault(); if (!$("#send-message").disabled) $("#message-form").requestSubmit();}
+  if (event.key === "Enter" && !event.shiftKey && !globalThis.CovenantMobile?.isMobile) {event.preventDefault(); if (!$("#send-message").disabled) $("#message-form").requestSubmit();}
 });
 async function refreshCurrent() {
   if (!state.room || !state.me) return;

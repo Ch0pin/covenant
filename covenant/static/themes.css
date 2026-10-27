@@ -106,3 +106,41 @@ dialog{background:var(--panel);border-color:var(--line)}
   .composer-bottom{margin-top:3px}
   .mention-help>span:last-child{display:none}
 }
+
+/* Native harness approvals stay in the participant sidebar. */
+.approvals-dialog {width:min(780px,94vw);max-height:85dvh;overflow:auto}
+.approval-card {border:1px solid var(--line);border-radius:12px;padding:16px;margin:12px 0;background:var(--panel)}
+.approval-card p {margin:6px 0}
+.approval-status {color:var(--accent);font-size:13px}
+.approval-details {margin:12px 0}
+.approval-details pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:38dvh;overflow:auto;background:var(--code-bg);padding:12px;border-radius:8px;font-size:12px}
+.approval-details small {overflow-wrap:anywhere}
+.approval-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.approvals-section {margin-top:24px;min-width:0}
+.approvals-section h2 {font-size:14px}
+.approvals-section h2 span {font-size:12px;color:var(--muted);margin-left:6px}
+.approvals-section .approval-card {padding:12px;font-size:12px}
+.approvals-section .approval-details pre {max-height:220px;font-size:11px}
+.approvals-section .approval-actions button {font-size:12px;padding:7px 10px}
+
+.approval-preview {white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;background:var(--code-bg);padding:10px;border-radius:8px;font-size:11px;line-height:1.5}
+.approval-path {overflow-wrap:anywhere;font-size:11px}
+.approvals-section .section-heading {gap:6px;align-items:flex-start}
+.approvals-section .participant-header-actions {flex-shrink:0}
+
+#pending-approvals {max-height:min(360px,45dvh);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-right:3px}
+.approval-card > .approval-summary {cursor:pointer;line-height:1.5;overflow-wrap:anywhere}
+.approval-summary > span {display:block;margin:4px 0 0 14px;font-size:11px}
+.approval-card[open] > .approval-summary {margin-bottom:12px}
+.approval-card:not([open]) {padding-top:10px;padding-bottom:10px}
+
+/* Empty composers stay on one line until the operator enters them. */
+.composer[data-expanded="false"]{position:relative;min-height:58px;padding:16px 62px 16px 16px}
+.composer[data-expanded="false"] .composer-recipients{display:none}
+.composer[data-expanded="false"] textarea{min-height:24px!important;max-height:24px!important;height:24px!important;overflow:hidden}
+.composer[data-expanded="false"] .composer-bottom{position:absolute;right:12px;top:50%;bottom:auto;transform:translateY(-50%);margin:0;min-height:34px}
+
+/* Pending decisions remain visible on the panel's collapsed entry points. */
+#reopen-participants,#toggle-participants,#toggle-approvals,#mobile-details{position:relative}
+[data-approval-pending="true"]::after{content:"";position:absolute;top:2px;right:2px;width:9px;height:9px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 2px var(--sidebar-bg);pointer-events:none}

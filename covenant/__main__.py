@@ -2,6 +2,7 @@ import argparse
 import getpass
 import os
 import sys
+from uuid import UUID
 
 from .auth import hash_password
 from .config import Settings
@@ -16,13 +17,33 @@ def main():
     init.add_argument("--password-stdin", action="store_true", help="Read password from stdin")
     serve = sub.add_parser("serve", help="Run the local server")
     serve.add_argument("--public-base-url", help="Public tunnel URL (overrides PUBLIC_BASE_URL for this run)")
-    args = parser.parse_args()
+    approvals = sub.add_parser("approvals", help="Forward native harness approvals to the operator panel")
+    approvals.add_argument("harness", choices=["codex", "claude"])
+    approvals.add_argument("--room", required=True, type=UUID)
+    approvals.add_argument("--agent", required=True, help="Existing room handle")
+    approvals.add_argument("--session", type=UUID, help="Codex thread UUID; optional Claude session binding")
+    # Arguments after -- belong to Claude, including --resume.
+    cli_args = sys.argv[1:]
+    extra = []
+    if cli_args[:1] == ["approvals"] and "--" in cli_args:
+        split = cli_args.index("--")
+        cli_args, extra = cli_args[:split], cli_args[split + 1:]
+    args = parser.parse_args(cli_args)
+    args.harness_args = extra
     os.umask(0o077)
     try:
         settings = Settings.load(public_base_url=getattr(args, "public_base_url", None))
     except ValueError as exc:
         parser.error(str(exc))
     db = Database(settings.database)
+    if args.command == "approvals":
+        from .approval_bridge import launch
+        try:
+            raise SystemExit(launch(args, settings, db))
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return
     db.initialize()
     if args.command == "init":
         with db.connect() as conn:

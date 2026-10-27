@@ -397,6 +397,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with db.connect() as conn:
             room(conn, rid)
             conn.execute("UPDATE rooms SET status=? WHERE id=?", (body.status, rid))
+            if body.status != "active":
+                conn.execute("""UPDATE approval_requests SET status='cancelled'
+                    WHERE status IN ('pending','decided','submitted') AND bridge_id IN (
+                    SELECT b.id FROM approval_bridges b JOIN agents a ON a.id=b.agent_id WHERE a.room_id=?)""", (rid,))
             if body.status == "archived":
                 conn.execute("DELETE FROM file_locks WHERE agent_id IN (SELECT id FROM agents WHERE room_id=?)", (rid,))
             bump(conn, rid)
@@ -641,6 +645,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_file_lock_routes(app, db, agent, room)
     register_receipt_routes(app, db, agent, operator, room)
     register_thread_routes(app, db, agent, operator, room, message_dict)
+
+    from .approvals import register_approval_routes
+    register_approval_routes(app, db, operator)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

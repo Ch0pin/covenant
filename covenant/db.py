@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS agent_delivery_status (
     agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     mode TEXT NOT NULL, state TEXT NOT NULL, last_error TEXT, updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approval_bridges (
+    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE, agent_token_hash TEXT NOT NULL,
+    harness TEXT NOT NULL, session_id TEXT, expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY, bridge_id TEXT NOT NULL REFERENCES approval_bridges(id) ON DELETE CASCADE,
+    request_key TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT, decided_by TEXT, created_at REAL NOT NULL, expires_at REAL NOT NULL,
+    alive_until REAL NOT NULL, decided_at REAL, UNIQUE(bridge_id,request_key)
+);
+CREATE INDEX IF NOT EXISTS approvals_bridge ON approval_requests(bridge_id);
 CREATE INDEX IF NOT EXISTS message_replies_parent ON message_replies(reply_to,message_id);
 CREATE INDEX IF NOT EXISTS receipts_agent ON message_receipts(agent_id,message_id);
 CREATE INDEX IF NOT EXISTS file_locks_lease ON file_locks(lock_id);

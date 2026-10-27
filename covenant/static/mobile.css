@@ -1,0 +1,103 @@
+/* Full-width chat with independently scrollable drawers on phones and tablets. */
+.mobile-toolbar,.mobile-scrim{display:none}
+@media(max-width:900px){
+  html,body{height:100%;overflow:hidden}
+  .workspace,.workspace.sidebar-collapsed{display:flex;flex-direction:column;height:var(--mobile-height,100dvh);width:100%;grid-template-columns:none;grid-template-rows:none}
+  .main{width:100%;flex:1;min-height:0}
+  .mobile-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:56px;flex-shrink:0;padding:env(safe-area-inset-top,0px) max(8px,env(safe-area-inset-right,0px)) 0 max(8px,env(safe-area-inset-left,0px));background:var(--sidebar-bg);border-bottom:1px solid var(--line)}
+  .mobile-toolbar>strong{font-size:14px;letter-spacing:-.03em}
+  .mobile-toolbar button{display:flex;align-items:center;justify-content:center;gap:6px;border:0;padding:8px;min-height:44px;font-size:12px}
+  .mobile-toolbar svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round}
+  .mobile-count{background:var(--accent);color:var(--primary-text);border-radius:12px;min-width:20px;padding:2px 5px;font-size:11px}
+  .mobile-scrim{display:block;position:fixed;inset:0;z-index:60;border:0;border-radius:0;background:#0008;touch-action:none}
+  .mobile-scrim:hover{background:#0008}
+  .sidebar,.participants-panel{position:fixed;z-index:70;top:var(--mobile-top,0px);bottom:auto;height:var(--mobile-height,100dvh);width:min(360px,calc(100vw - 32px));max-width:none;border:1px solid var(--line);box-shadow:0 12px 45px #0006;overscroll-behavior:contain;padding-bottom:max(16px,env(safe-area-inset-bottom,0px))}
+  .sidebar{left:0;display:flex;flex-direction:column;overflow-y:auto;grid-template-columns:none;grid-template-rows:none}
+  .participants-panel{right:0;left:auto;padding:16px;overflow-y:auto;padding-top:max(16px,env(safe-area-inset-top,0px));padding-bottom:max(16px,env(safe-area-inset-bottom,0px))}
+  .sidebar-brand{padding:16px;flex-shrink:0;padding-top:max(16px,env(safe-area-inset-top,0px))}
+  .sidebar-brand small{display:block}
+  .sidebar-label{display:flex;padding:16px 18px 8px}
+  .sidebar-footer .icon-button{min-height:44px;min-width:44px}
+  .sidebar-footer{display:flex;padding:12px 16px;flex-shrink:0}
+  .sidebar>.new-room{margin:4px 16px 12px;min-height:44px;padding:10px 12px;font-size:13px;white-space:normal}
+  .sidebar>.room-tabs{margin:0 16px 6px;flex-shrink:0}
+  .room-tabs button{min-height:44px;font-size:13px}
+  .sidebar>.room-list{display:block;overflow-x:hidden;overflow-y:auto;min-height:90px;flex:1;padding:4px 10px}
+  .room-row{min-width:0;max-width:none;margin-bottom:6px;flex-shrink:1}
+  .room-row .room-item{width:100%;min-width:0;max-width:none;padding:12px;min-height:68px}
+  .room-item strong{font-size:13px}.room-item small{font-size:11px}.room-item-time{display:inline}
+  .room-avatar{width:32px;height:32px;font-size:15px}
+  .room-inline-actions{opacity:1;pointer-events:auto;bottom:4px;right:4px}
+  .room-inline-action{width:40px;height:40px;padding:10px}
+  .room-row .room-item small{padding-right:80px}
+  .theme-control{display:flex;align-self:stretch;margin:10px 16px 0;font-size:13px;gap:8px}
+  .theme-control>span:not(.theme-swatch){display:inline}.theme-control select{width:auto;flex:1;min-height:44px;padding:8px;font-size:16px}
+  .notifications-toggle{margin:10px 16px;min-height:44px;font-size:13px}
+  .panel-resizer,#reopen-conversations,#participants-reopen-rail{display:none!important}
+  .panel-toggle{width:44px;height:44px;min-width:44px;padding:10px}
+  .participants-title{gap:4px;margin-bottom:12px;flex-wrap:nowrap}
+  .participants-title h2{font-size:14px}.participants-title h2 span{font-size:11px}
+  .participant-header-actions{gap:0}.participant-header-actions>.icon-button{width:44px;min-height:44px}
+  .participant{gap:10px}.participant .avatar{display:grid}.participant strong{font-size:13px}.participant small{font-size:11px}
+  .participant-controls{margin-left:42px;gap:8px}.participant-controls button{min-height:44px;padding:8px 0;font-size:12px}
+  .file-locks-section h2,.approvals-section h2{font-size:14px}
+  .file-lock-path,.file-lock-owner{font-size:12px}.file-lock-expiry,.file-lock-exact{font-size:11px}
+  .room-guide{display:block}
+  .conversation-header,.sidebar-collapsed .conversation-header{min-height:0;padding:10px 12px;gap:8px;flex-wrap:wrap;flex-shrink:0}
+  .conversation-header>div:first-child{flex:1;min-width:120px}
+  .room-heading{gap:6px;flex-wrap:wrap}.room-heading h1{font-size:17px;line-height:1.3}
+  .conversation-header #room-subtitle{display:none}
+  .room-actions{flex-direction:row;flex-wrap:wrap;gap:6px}.room-actions button{min-height:44px;font-size:12px;padding:8px 10px}
+  .conversation-body,.chat-column{width:100%;min-width:0}
+  .objective-box{margin:0 12px 6px;padding:6px 12px;border-radius:10px}
+  .objective-box p{font-size:12px;max-height:70px}.objective-box .section-heading{min-height:36px}
+  .objective-box .panel-toggle{height:36px}
+  .message-scroll{padding:14px 12px;overscroll-behavior:contain;scroll-padding-bottom:12px}
+  .messages{gap:18px}.message{max-width:100%;gap:8px}
+  .message>.avatar{display:none}.message-bubble{font-size:14px;line-height:1.6;padding:10px 12px}
+  .message-meta{gap:6px}.message-meta .sender-label{font-size:12px}.message-time{font-size:10px}
+  .message-actions .reply-button,.thread-summary{min-height:40px;font-size:12px}
+  .message-thread[open]>.thread-body{padding-left:8px}
+  .message-main{max-width:100%}
+  .composer-area{margin:0;padding:6px max(10px,env(safe-area-inset-right,0px)) max(6px,env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));background:var(--chat-bg)}
+  .composer{padding:8px 10px;border-radius:14px;margin:0}
+  .composer textarea{font-size:16px;min-height:44px;max-height:min(120px,24dvh)!important;line-height:1.5}
+  .composer-recipients{margin-bottom:4px;min-height:32px}.add-recipient{font-size:12px;min-height:36px}
+  .recipient-chip{font-size:12px}.remove-recipient{width:32px;height:32px}
+  .composer-bottom{min-height:40px;margin-top:0}.composer .send-icon{width:44px;height:44px;padding:10px}
+  .composer-footnote{font-size:10px;margin:4px 4px 0}
+  .mobile-keyboard .objective-box,.mobile-keyboard .composer-footnote{display:none}
+  .mention-option{min-height:48px;font-size:14px}.mention-help>span:last-child{display:none}
+  #mention-options{max-height:min(220px,30dvh)}
+  input,textarea,select,.invite-dialog textarea{font-size:16px}
+  dialog{width:calc(100vw - 24px);max-height:calc(var(--mobile-height,100dvh) - 24px);overflow-y:auto;padding:18px}
+  .dialog-header{margin-bottom:12px}.dialog-header .close-dialog{min-width:44px;min-height:44px}
+  .approvals-dialog{width:calc(100vw - 24px)}
+  .approval-summary{min-height:44px}.approvals-section .approval-actions button{min-height:44px;font-size:13px;padding:9px 12px}
+  #pending-approvals{max-height:min(400px,55dvh)}
+  .toast{z-index:90;bottom:max(16px,env(safe-area-inset-bottom,0px));width:max-content;max-width:calc(100vw - 24px)}
+  .connection-error,.sidebar-collapsed .connection-error{padding:8px 12px}
+  .login-screen{height:100dvh;min-height:0;overflow-y:auto;padding:24px 0}
+  .login-card{width:min(420px,calc(100% - 40px));padding:12px 0}
+  .login-card button{min-height:44px}
+}
+@media(max-width:380px){
+  .mobile-toolbar>strong{font-size:12px}.mobile-toolbar button{font-size:11px;padding:6px}
+  .participants-title{flex-wrap:wrap}
+}
+@media(max-width:900px) and (max-height:500px){
+  .objective-box,.composer-footnote{display:none}
+  .mobile-toolbar{min-height:44px}.conversation-header{padding-top:4px;padding-bottom:4px}
+  .composer{position:relative;padding-right:60px}.composer-bottom{position:absolute;right:8px;bottom:8px}
+  .composer textarea{min-height:36px;max-height:64px!important}
+}
+
+@media(max-width:900px){
+  .conversation-header,#objective-box{display:none!important}
+  .participants-panel>.room-actions{margin:0 0 16px}
+}
+
+@media(max-width:900px){
+  .composer[data-expanded="false"]{min-height:60px;padding:17px 62px 17px 12px}
+  .composer[data-expanded="false"] .composer-bottom{right:8px;min-height:44px}
+}
