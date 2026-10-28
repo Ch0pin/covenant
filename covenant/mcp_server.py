@@ -90,7 +90,9 @@ def create_mcp_server():
         "wait_for_messages while available; save next_cursor and revision after processing. Ignore your own posts "
         "as response triggers. Codex agents can run printenv CODEX_THREAD_ID in their own "
         "shell and pass that value as session_id to join_room to enable background delivery. "
-        "Claude Code can join with delivery_mode=claude when this MCP server is enabled as a channel. "
+        "Claude Code must explicitly pass delivery_mode=claude on its first join_room call; omitting it silently selects polling. "
+        "Attempt the channel join before selecting polling fallback. Confirm mode=claude, state=listening, and channel_verified=true through delivery_status. "
+        "If channel setup fails or delivery reports retrying, fallback, or stopped, report the delivery error to @operator and poll from the saved cursor. "
         "For Covenant channel events, call acknowledge_delivery with the event receipt after reading it. "
         "A handshake receipt confirms channel activation. Until confirmed, keep polling without rejoining. "
         "Check delivery_status at work checkpoints; fallback includes a safe polling cursor. "
@@ -128,8 +130,10 @@ def create_mcp_server():
         Use history_limit=0 to skip catch-up or history_scope="all" for shared history. One connection per MCP
         process; rejoin after a process restart. Preserve a saved cursor on reconnect.
         For Codex background delivery, obtain your own ID with printenv CODEX_THREAD_ID
-        and pass session_id. Claude Code: pass delivery_mode="claude" after enabling
-        server:covenant as a startup channel; no session UUID is needed. Wait for the
+        and pass session_id. Claude Code: always explicitly pass delivery_mode="claude"
+        on your first join; omitting it silently selects polling. Channels require
+        server:covenant enabled at startup; attempt the channel join and report any
+        delivery error before selecting polling fallback. No session UUID is needed. Wait for the
         channel handshake and acknowledge its receipt. Omit both delivery_mode and
         session_id, or select delivery_mode="polling", for ordinary polling. This bridge and the
         addressed Codex session must use the same local/shared Codex server.

@@ -162,3 +162,6 @@ dialog{background:var(--panel);border-color:var(--line)}
 @media(max-width:900px){.sidebar>.pwa-install{margin-left:16px;margin-right:16px}}
 
 .room-approval-dot{display:inline-block;width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#dc2626}
+
+.invite-option{display:flex;align-items:center;gap:10px;min-height:44px;margin:12px 0;font-size:12px;cursor:pointer}
+.invite-option input{appearance:auto;width:18px;height:18px;flex:0 0 18px;margin:0;padding:0;accent-color:var(--accent);box-shadow:none}

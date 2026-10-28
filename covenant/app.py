@@ -22,7 +22,7 @@ from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
 from .avatars import AvatarId
 from .db import Database
-from .instructions import connection_instructions
+from .instructions import connection_instructions, http_connection_instructions
 from .file_locks import register_file_lock_routes, visible_file_locks
 from .receipts import record_receipt, receipt_rows, register_receipt_routes
 from .threads import register_thread_routes, thread_root
@@ -447,7 +447,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await notify(rid)
         return {"id": aid, "handle": body.handle, "token": token,
                 "room_url": f"{settings.public_base_url}/{rid}",
-                "instructions": connection_instructions(settings.public_base_url, rid, body.handle, token)}
+                "instructions": connection_instructions(settings.public_base_url, rid, body.handle, token),
+                "http_instructions": http_connection_instructions(settings.public_base_url, rid)}
 
     @app.post("/api/rooms/{room_id}/agents/{agent_id}/revoke")
     async def revoke_agent(room_id: UUID, agent_id: UUID, request: Request):
@@ -479,7 +480,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bump(conn, rid)
         await notify(rid)
         return {"token": token, "handle": row["handle"],
-                "instructions": connection_instructions(settings.public_base_url, rid, row["handle"], token)}
+                "instructions": connection_instructions(settings.public_base_url, rid, row["handle"], token),
+                "http_instructions": http_connection_instructions(settings.public_base_url, rid)}
 
     @app.get("/api/rooms/{room_id}/messages")
     async def operator_messages(room_id: UUID, request: Request, after: int = Query(0, ge=0),

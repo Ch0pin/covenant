@@ -140,7 +140,7 @@ function showLogin() {
   closeRoomMenu(); state.me = null; window.dispatchEvent(new Event("covenant-login-change")); state.csrf = ""; state.room = null; state.generation++; applyPanelPreferences();
   $("#workspace").hidden = true; $("#login-screen").hidden = false;
   $("#messages").replaceChildren(); $("#room-list").replaceChildren(); $("#agent-list").replaceChildren();
-  $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
+  clearInvite(); document.querySelectorAll("dialog[open]").forEach(d => d.close());
 }
 let roomReadCursors = {}, roomListSignature = "";
 function loadRoomReads() {
@@ -678,7 +678,7 @@ function clearConversation() {
   hideMentions();
   state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null; applyPanelPreferences();
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); resetComposer();
-  $("#invite-text").value = ""; document.querySelectorAll("dialog[open]").forEach(d => d.close());
+  clearInvite(); document.querySelectorAll("dialog[open]").forEach(d => d.close());
   $("#conversation").hidden = true; $("#empty-state").hidden = false;
   history.replaceState(null, "", "/"); renderRooms();
 }
@@ -746,17 +746,38 @@ function openDialog(id) {const dialog = $(id); const form = dialog.querySelector
 $("#new-room").onclick = $("#empty-new-room").onclick = () => openDialog("#room-dialog");
 $("#add-agent").onclick = () => openDialog("#agent-dialog");
 document.querySelectorAll(".close-dialog").forEach(button => button.onclick = () => button.closest("dialog").close());
-$("#invite-dialog").addEventListener("close", () => {$("#invite-text").value = "";});
+$("#invite-dialog").addEventListener("close", clearInvite);
 $("#room-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget, button = form.querySelector("button[type=submit]"); button.disabled = true;
   try {const room = await api("/api/rooms", {method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form)))}); $("#room-dialog").close(); await setFilter(false); await selectRoom(room.id);}
   catch(error) {form.querySelector(".dialog-error").textContent = error.message;} finally {button.disabled = false;}
 });
-function showInvite(data) {$("#invite-title").textContent = "Connect @" + data.handle; $("#invite-text").value = data.instructions; $("#copy-invite").textContent = "Copy connection instructions"; $("#invite-dialog").showModal();}
+let currentInvite = null;
+function clearInvite() {
+  currentInvite = null;
+  $("#invite-text").value = "";
+  $("#invite-include-http").checked = false;
+}
+function renderInvite() {
+  if (!currentInvite) return;
+  $("#invite-text").value = currentInvite.instructions + ($("#invite-include-http").checked ? currentInvite.http : "");
+  $("#copy-invite").textContent = "Copy connection instructions";
+}
+function showInvite(data, includeHttp = false) {
+  currentInvite = {instructions: data.instructions, http: data.http_instructions || ""};
+  const toggle = $("#invite-include-http");
+  toggle.disabled = !currentInvite.http;
+  toggle.checked = Boolean(includeHttp && currentInvite.http);
+  toggle.title = currentInvite.http ? "Include direct HTTP instructions for agents without Covenant MCP tools." : "Restart Covenant to enable invitation format options.";
+  $("#invite-title").textContent = "Connect @" + data.handle;
+  renderInvite();
+  $("#invite-dialog").showModal();
+}
+$("#invite-include-http").addEventListener("change", renderInvite);
 $("#agent-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget, button = form.querySelector("button[type=submit]"); button.disabled = true;
-  const id = state.room.id;
-  try {const data = await api(`/api/rooms/${id}/agents`, {method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form)))}); $("#agent-dialog").close(); showInvite(data); await refreshCurrent();}
+  const id = state.room.id, includeHttp = $("#agent-include-http").checked;
+  try {const data = await api(`/api/rooms/${id}/agents`, {method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form)))}); $("#agent-dialog").close(); showInvite(data, includeHttp); await refreshCurrent();}
   catch(error) {form.querySelector(".dialog-error").textContent = error.message;} finally {button.disabled = false;}
 });
 $("#copy-invite").onclick = async () => {

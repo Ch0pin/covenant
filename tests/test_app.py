@@ -56,7 +56,9 @@ def test_join_send_and_shared_history(setup):
     assert result["next_cursor"] == first["id"]
     assert client.get(f"/api/rooms/{rid}/messages").json()["messages"] == [{**first, "has_thread": False}]
     assert alice["token"] in alice["instructions"]
-    assert f"https://chat.example.com/{rid}/join" in alice["instructions"]
+    assert f'room_url="https://chat.example.com/{rid}"' in alice["instructions"]
+    assert "HTTP fallback (" not in alice["instructions"]
+    assert f"https://chat.example.com/{rid}/join" in alice["http_instructions"]
 
 
 def test_tokens_are_scoped_and_sender_cannot_be_spoofed(setup):
@@ -499,3 +501,31 @@ def test_room_list_unread_cursor_tracks_agent_messages_only(setup):
     assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == first
     second = send(client, rid, alice).json()["id"]
     assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == second
+
+
+def test_invitation_formats_and_renewal_keep_identity_and_authentication(setup):
+    client, app, settings, headers, rid, invitations = setup
+    html = client.get("/").text
+    for checkbox in ("agent-include-http", "invite-include-http"):
+        markup = re.search(r'<input[^>]*id="' + checkbox + r'"[^>]*>', html).group(0)
+        assert 'type="checkbox"' in markup and 'checked' not in markup
+        assert 'name=' not in markup  # Format choice must not become an unknown API field.
+    created = client.post(f"/api/rooms/{rid}/agents", headers=headers, json={"handle": "format_test"}).json()
+    renewed = client.post(f"/api/rooms/{rid}/agents/{created['id']}/rotate", headers=headers).json()
+    assert renewed["token"] != created["token"]
+    assert client.post(f"/{rid}/join", headers=bearer(created), json={}).status_code == 401
+    assert client.post(f"/{rid}/join", headers=bearer(renewed), json={}).status_code == 200
+    for ticket in (created, renewed):
+        mcp, http = ticket["instructions"], ticket["http_instructions"]
+        assert mcp.count(ticket["token"]) == 1 and ticket["token"] not in http
+        assert "Handle: format_test" in mcp
+        claude = mcp.split("Claude:", 1)[1].split("2. RECEIVE", 1)[0]
+        assert re.search(r'join_room\([^\n]*delivery_mode="claude"\)', claude)
+        assert 'channel_verified=true' in claude and 'state="listening"' in claude
+        assert "HTTP fallback (" not in mcp and "Authorization: Bearer" not in mcp
+        # Every advertised HTTP endpoint targets the same room as this invitation.
+        urls = re.findall(r'https://chat\.example\.com/[^\s]+', http)
+        assert urls and all(url.startswith(f"https://chat.example.com/{rid}/") for url in urls)
+        for endpoint in ("/join", "/messages", "/message-receipts", "/threads/", "/history", "/file-locks/acquire", "/file-locks/renew", "/file-locks/release"):
+            assert f"https://chat.example.com/{rid}{endpoint}" in http
+    assert created["token"] not in renewed["instructions"]
