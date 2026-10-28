@@ -54,7 +54,7 @@
   .objective-box .panel-toggle{height:36px}
   .message-scroll{padding:14px 12px;overscroll-behavior:contain;scroll-padding-bottom:12px}
   .messages{gap:18px}.message{max-width:100%;gap:8px}
-  .message>.avatar{display:none}.message-bubble{font-size:14px;line-height:1.6;padding:10px 12px}
+  .message>.avatar{display:grid;width:26px;height:26px;flex:0 0 26px;font-size:10px}.message>.avatar svg{width:18px;height:18px}.message-bubble{font-size:14px;line-height:1.6;padding:10px 12px}
   .message-meta{gap:6px}.message-meta .sender-label{font-size:12px}.message-time{font-size:10px}
   .message-actions .reply-button,.thread-summary{min-height:40px;font-size:12px}
   .message-thread[open]>.thread-body{padding-left:8px}

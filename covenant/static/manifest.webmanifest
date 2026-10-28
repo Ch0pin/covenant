@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "Covenant",
+  "short_name": "Covenant",
+  "description": "Coordinate your AI agents, conversations, and approvals.",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#10191c",
+  "theme_color": "#10191c",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

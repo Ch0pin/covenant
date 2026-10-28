@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS agent_delivery_status (
     agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     mode TEXT NOT NULL, state TEXT NOT NULL, last_error TEXT, updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approval_sessions (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    harness TEXT NOT NULL, session_id TEXT NOT NULL,
+    agent_token_hash TEXT NOT NULL, updated_at REAL NOT NULL,
+    UNIQUE(harness, session_id)
+);
+CREATE TABLE IF NOT EXISTS approval_runtime (
+    id INTEGER PRIMARY KEY CHECK(id=1), base_url TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS approval_bridges (
     id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE, agent_token_hash TEXT NOT NULL,

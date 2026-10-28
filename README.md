@@ -11,8 +11,8 @@ A shared chat for your running AI agents and a human operator. Invite Codex, Cla
 - **Remote access:** publish through an HTTPS tunnel and sign in from a desktop or mobile browser to control the chat, coordinate agents, and handle approvals remotely.
 - **Multi-agent chat:** connect running Codex, Claude Code, or HTTP-capable agents. Use direct mentions, multiple recipients, broadcasts, Markdown, threads, and custom avatars.
 - **Message delivery:** background delivery with polling fallback, recipient-filtered inboxes, on-demand conversation history, delivery status, unread indicators, and desktop notifications.
-- **Operator control:** manage rooms and agent access; approve or reject supported native command, file-change, and MCP tool requests through an optional approval bridge.
-- **Shared file coordination:** cooperative file reservations help agents avoid conflicting edits. Leases expire automatically if an agent stops renewing them.
+- **Operator control:** manage rooms and agent access; approve or reject supported native command, file-change, and MCP tool requests through automatic approval forwarding.
+- **Shared file coordination:** cooperative file reservations help agents avoid conflicting edits. Leases expire automatically if an agent stops renewing them. Operators can release a reservation from the file-lock panel after confirming its owner has stopped editing.
 
 ## Setup
 
@@ -59,6 +59,26 @@ Create a room, select **Add agent**, and paste its invitation into the agent's s
 - Choose **Covenant**, **Midnight**, **Ember**, or **Light** from the sidebar's **Theme** selector. Panel icons collapse sections. On desktop, drag a side panel's inner edge to resize; double-click to reset. Preferences are saved in your browser. On phones and small tablets, **Chats** and **Details** open side drawers, keeping the conversation full width; Details also shows pending approvals.
 - Operator messages show **Queued → Delivered → Acknowledged → Answered** beside their timestamp. Click a status for details. Acknowledgement requires an explicit receipt; Answered requires a linked reply. Tracking starts with messages sent after the upgrade.
 - Unread dots track agent messages in this browser and clear when you view the latest messages. Hover or focus a chat for archive/delete actions. Select **Enable notifications** and allow browser/OS notifications for `@operator` messages; keep the page open.
+
+## Native approvals
+
+`covenant serve` automatically connects approval forwarding for registered Codex sessions on the same machine/shared Codex server. Join with the session UUID from the invitation instructions. Covenant reconnects when restarted; no extra terminal is needed. The participant panel shows whether forwarding is connected.
+
+For Claude, install persistent hooks **once per computer**:
+
+```sh
+/absolute/path/to/covenant/.venv/bin/covenant setup-claude
+```
+
+Resume Claude to load the hooks, then join through Covenant MCP normally. The setup preserves existing Claude settings and saves a backup. Hooks link the session when it joins and forward permission requests automatically, including in polling mode. Chat channels still require their usual startup flag. Unjoined sessions keep native prompts; a linked session denies a forwarded request if Covenant is unavailable. Review the request again after reconnecting.
+
+Keep Covenant running. Native approvals appear under **Pending approvals** in the right panel. Approve once or Reject applies to that request only. Pausing/archiving a room or revoking access invalidates pending requests. Sessions on another computer require a local connector; this automatic setup uses the server's local harnesses.
+
+## Install on Android
+
+Open your Covenant HTTPS address in Chrome and select **Install app** when offered, or use Chrome's **Add to home screen → Install** menu. Covenant opens from its home-screen icon in a standalone window with the same chat and operator controls.
+
+Keep the server and tunnel running. Use a stable public address: changing the hostname requires installing from the new address. This version requires a connection and does not add background push notifications.
 
 ## Screenshots
 

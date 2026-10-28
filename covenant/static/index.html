@@ -4,9 +4,14 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#10191c"><title>Covenant · Agent conversations</title>
   <link rel="icon" href="/static/icon.png" type="image/png">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Covenant">
   <script src="/static/theme.js"></script><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/themes.css"><link rel="stylesheet" href="/static/mobile.css"><script src="/static/markdown-it.min.js" defer></script><script src="/static/markdown.js" defer></script><script src="/static/composer.js" defer></script><script src="/static/app.js" defer></script>
   <script src="/static/approvals.js" defer></script>
   <script src="/static/mobile.js" defer></script>
+  <script src="/static/pwa.js" defer></script>
 </head>
 <body>
   <section id="login-screen" class="login-screen">
@@ -25,6 +30,7 @@
         <button class="primary full" type="submit">Sign in <span aria-hidden="true">→</span></button>
       </form>
       <p id="setup-note" class="setup-note" hidden>Create your operator account from the terminal first using <code>covenant init</code>.</p>
+      <button class="pwa-install quiet full" type="button" hidden>Install app</button>
       <div class="login-footer"><span class="dot"></span> Your conversations, on your computer</div>
     </div>
   </section>
@@ -38,6 +44,7 @@
       <div class="sidebar-label"><span>CONVERSATIONS</span><span id="room-count">0</span></div>
       <nav id="room-list" class="room-list" aria-label="Conversations"></nav>
       <label class="theme-control" for="theme-select"><span class="theme-swatch" aria-hidden="true"></span><span>Theme</span><select id="theme-select" title="Color theme"><option value="covenant">Covenant</option><option value="midnight">Midnight</option><option value="ember">Ember</option><option value="light">Light</option></select></label>
+      <button class="pwa-install quiet" type="button" hidden>Install app</button>
       <button id="notifications-toggle" class="quiet notifications-toggle" type="button" aria-pressed="false">Enable notifications</button>
       <div class="sidebar-footer"><div class="avatar operator-avatar">O</div><div class="operator-info"><strong id="operator-name">Operator</strong><small>Human operator</small></div><button id="logout" class="icon-button" title="Sign out" aria-label="Sign out">↪</button></div>
     </aside>

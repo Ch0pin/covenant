@@ -17,6 +17,7 @@ def main():
     init.add_argument("--password-stdin", action="store_true", help="Read password from stdin")
     serve = sub.add_parser("serve", help="Run the local server")
     serve.add_argument("--public-base-url", help="Public tunnel URL (overrides PUBLIC_BASE_URL for this run)")
+    sub.add_parser("setup-claude", help="Install persistent Claude approval hooks once")
     approvals = sub.add_parser("approvals", help="Forward native harness approvals to the operator panel")
     approvals.add_argument("harness", choices=["codex", "claude"])
     approvals.add_argument("--room", required=True, type=UUID)
@@ -35,6 +36,17 @@ def main():
         settings = Settings.load(public_base_url=getattr(args, "public_base_url", None))
     except ValueError as exc:
         parser.error(str(exc))
+    if args.command == "setup-claude":
+        from .claude_approvals import install
+        try:
+            path, backup = install(settings)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(f"Claude approval hooks installed: {path}")
+        if backup:
+            print(f"Previous settings preserved: {backup}")
+        print("Resume Claude so it loads the hooks, then join a Covenant room normally.")
+        return
     db = Database(settings.database)
     if args.command == "approvals":
         from .approval_bridge import launch

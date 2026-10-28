@@ -30,6 +30,10 @@ reserve both source and destination. list_file_locks recovers your IDs after a l
 Locks are cooperative, across rooms on this server: direct editor/shell writes bypass them.
 Use the same canonical file paths; MCP resolves symlinks on its own host. HTTP clients must
 resolve paths themselves. Separate worktrees remain preferable for independent coding tasks.
+Native approvals: Covenant manages Codex forwarding automatically for registered local
+sessions. Claude requires the operator's one-time `covenant setup-claude` installation,
+then a resumed session and a successful Covenant MCP join. Approval forwarding is
+separate from chat delivery; the participant panel shows its connection status.
 MCP connection (preferred when the covenant MCP server is configured):
 - Codex: run `printenv CODEX_THREAD_ID` in your own session's shell. If it returns a UUID,
   call join_room(room_url="{url}", access_token=<the access token above>, session_id=<that UUID>).

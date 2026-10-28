@@ -191,9 +191,9 @@ def test_operator_panel_lists_current_room_locks_and_tracks_lifecycle(setup):
         assert response.status_code == 200
         return response.json()["file_locks"]
     result = panel()
-    assert result["locks"] == [{"path": "/workspace/long/path/review.py", "owner": "alice", "expires_at": first["expires_at"]}]
+    assert result["locks"] == [{"path": "/workspace/long/path/review.py", "owner": "alice", "expires_at": first["expires_at"], "lock_id": first["lock_id"]}]
     assert result["server_time"] < first["expires_at"] and not result["truncated"]
-    assert "lock_id" not in result["locks"][0]
+    assert result["locks"][0]["lock_id"] == first["lock_id"]
     renewed = client.post(f"/{rid}/file-locks/renew", headers=bearer(alice),
         json={"lock_id": first["lock_id"], "lease_seconds": 600}).json()
     assert panel()["locks"][0]["expires_at"] == renewed["expires_at"]
@@ -224,3 +224,57 @@ def test_operator_lock_list_is_bounded(setup):
             for index in range(501)])
     result = client.get(f"/api/rooms/{rid}").json()["file_locks"]
     assert len(result["locks"]) == 500 and result["truncated"]
+
+
+def test_operator_releases_entire_lease_and_old_owner_cannot_renew(setup):
+    client, _, _, headers, rid, (alice, bob) = setup
+    paths = ["/workspace/a.py", "/workspace/b.py"]
+    lease = acquire(client, rid, alice, paths)
+    other = acquire(client, rid, bob, ["/workspace/unrelated.py"])
+    endpoint = f"/api/rooms/{rid}/file-locks/{lease['lock_id']}"
+    preview = client.get(endpoint).json()
+    assert preview["owner"] == "alice" and preview["paths"] == paths
+    assert preview["lock_id"] == lease["lock_id"]
+    assert preview["expires_at"] > preview["server_time"]
+    assert client.post(endpoint + "/release").status_code == 403
+    assert client.post(endpoint + "/release", headers={**headers, "Origin": "https://untrusted.example"}).status_code == 403
+    # An operator can recover a paused room's reservation, too.
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "paused"})
+    result = client.post(endpoint + "/release", headers=headers)
+    assert result.status_code == 200
+    assert result.json()["released"] == 2
+    assert [r["path"] for r in result.json()["file_locks"]["locks"]] == ["/workspace/unrelated.py"]
+    assert lease_action(client, rid, alice, "renew", lease["lock_id"]).json()["renewed"] is False
+    assert lease_action(client, rid, bob, "renew", other["lock_id"]).json()["renewed"] is True
+    client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "active"})
+    assert acquire(client, rid, bob, paths)["acquired"] is True
+
+
+def test_operator_stale_confirmation_never_releases_replacement(setup):
+    client, app, _, headers, rid, (alice, bob) = setup
+    original = acquire(client, rid, alice, ["/workspace/shared.py"])
+    endpoint = f"/api/rooms/{rid}/file-locks/{original['lock_id']}"
+    assert client.get(endpoint).status_code == 200
+    with app.state.db.connect() as conn:
+        conn.execute("UPDATE file_locks SET expires_at=0 WHERE lock_id=?", (original["lock_id"],))
+    replacement = acquire(client, rid, bob, ["/workspace/shared.py"])
+    assert replacement["lock_id"] != original["lock_id"]
+    assert client.post(endpoint + "/release", headers=headers).status_code == 409
+    assert client.get(endpoint).status_code == 409
+    assert lease_action(client, rid, bob, "renew", replacement["lock_id"]).json()["renewed"] is True
+
+
+def test_operator_release_requires_login_and_correct_room(setup):
+    client, _, _, headers, rid, (alice, _) = setup
+    lease = acquire(client, rid, alice, ["/workspace/a.py"])
+    other_room = client.post("/api/rooms", headers=headers, json={"title": "Other"}).json()["id"]
+    wrong = f"/api/rooms/{other_room}/file-locks/{lease['lock_id']}"
+    assert client.get(wrong).status_code == 409
+    assert client.post(wrong + "/release", headers=headers).status_code == 409
+    endpoint = f"/api/rooms/{rid}/file-locks/{lease['lock_id']}"
+    client.cookies.clear()
+    assert client.get(endpoint).status_code == 401
+    assert client.post(endpoint + "/release", headers=headers).status_code == 401
+    assert client.get(endpoint, headers=bearer(alice)).status_code == 401
+    assert client.post(endpoint + "/release", headers=bearer(alice)).status_code == 401
+    assert lease_action(client, rid, alice, "renew", lease["lock_id"]).json()["renewed"] is True

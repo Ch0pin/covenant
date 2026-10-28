@@ -4,6 +4,39 @@
   const button = $("#approvals-toggle"), dialog = $("#approvals-dialog"), list = $("#approvals-list");
   let busy = false, signature = "", known = new Set(), epoch = null;
   const labels = {pending: "Waiting for you", decided: "Decision queued", submitted: "Decision sent · awaiting harness", resolved: "Request closed", cancelled: "Cancelled", expired: "Expired"};
+  const connectionStates = new Map();
+  function paintConnection(node) {
+    const connection = connectionStates.get(node.dataset.agentId);
+    const label = {connected: "connected", ready: "ready", connecting: "connecting", disconnected: "disconnected"}[connection?.state] || "setup required";
+    node.textContent = `Approvals: ${label}`;
+    node.title = connection?.detail || (connection?.state === "connected" ? "Native approval forwarding is connected." : "Codex needs a registered session. Claude needs covenant setup-claude once, then a room join.");
+  }
+  function updateConnections(connections) {
+    connectionStates.clear();
+    for (const connection of connections) connectionStates.set(connection.agent_id, connection);
+    $("#agent-list").querySelectorAll(".approval-connection").forEach(paintConnection);
+  }
+  globalThis.CovenantApprovalConnections = {paint: paintConnection};
+  const roomPendingCounts = new Map();
+  function paintRoomApproval(button) {
+    const count = roomPendingCounts.get(button.dataset.roomId) || 0;
+    const dot = button.querySelectorAll(".room-approval-dot")[0];
+    if (!dot) return;
+    dot.hidden = count === 0;
+    const description = count ? `${count} pending approval${count === 1 ? "" : "s"} need your decision` : "";
+    dot.title = description;
+    button.setAttribute("aria-description", description);
+  }
+  function updateRoomApprovals(requests) {
+    roomPendingCounts.clear();
+    for (const request of requests) {
+      if (request.status === "pending" && request.room_id) {
+        roomPendingCounts.set(request.room_id, (roomPendingCounts.get(request.room_id) || 0) + 1);
+      }
+    }
+    $("#room-list").querySelectorAll(".room-item").forEach(paintRoomApproval);
+  }
+  globalThis.CovenantRoomApprovals = {paint: paintRoomApproval};
   let currentRequests = [];
   const localDecisions = new Map();
   const pendingList = $("#pending-approvals"), collapse = $("#toggle-approvals");
@@ -31,6 +64,7 @@
     signature = next; list.replaceChildren(); pendingList.replaceChildren();
     const pending = requests.filter(r => r.status === "pending");
     showPendingCount(pending.length);
+    updateRoomApprovals(pending);
     if (!pending.length) pendingList.append(element("p", "muted", "No pending approvals."));
     for (const request of requests) {
       const card = element("details", "approval-card");
@@ -86,6 +120,8 @@
   }
   async function refreshApprovals() {
     if (!state.me) {
+      updateConnections([]);
+      updateRoomApprovals([]);
       signature = ""; known.clear(); localDecisions.clear(); currentRequests = []; epoch = null; showPendingCount(0); list.replaceChildren(); pendingList.replaceChildren();
       if (dialog.open) dialog.close();
       return;
@@ -95,8 +131,9 @@
     if (epoch !== user) {known.clear(); signature = ""; epoch = user;}
     busy = true;
     try {
-      const {requests} = await api("/api/approvals");
+      const {requests, connections = []} = await api("/api/approvals");
       if (state.me !== user) return;
+      updateConnections(connections);
       $("#approvals-panel").hidden = false;
       $("#approvals-error").hidden = true;
       const pending = requests.filter(r => r.status === "pending");
@@ -119,7 +156,8 @@
       }));
     } catch (error) {
       if (!state.me || state.me !== user) return;
-      if (error.status === 404) {$("#approvals-panel").hidden = true; showPendingCount(0); signature = "";}
+      updateConnections([...connectionStates.values()].map(c => ({...c, state: "disconnected", detail: "Cannot reach Covenant approval forwarding."})));
+      if (error.status === 404) {updateRoomApprovals([]); $("#approvals-panel").hidden = true; showPendingCount(0); signature = "";}
       if (error.status !== 404) {
         $("#approvals-error").textContent = "Approval connection unavailable. Refreshing automatically; the native harness remains available.";
         $("#approvals-error").hidden = false;

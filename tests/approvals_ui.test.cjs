@@ -14,10 +14,10 @@ function fixture(){
   showModal(){this.open=true;}close(){this.open=false;}focus(){document.activeElement=this;}
  }
  const nodes=new Map(),listeners={};let refresh;
- const state={me:{username:'operator'}},network={rows:[],fail:false,decisions:[]};
+ const state={me:{username:'operator'}},network={rows:[],connections:[],fail:false,decisions:[]};
  const ctx=vm.createContext({state,document,$:s=>{if(!nodes.has(s))nodes.set(s,new Node('div'));return nodes.get(s);},element:(...args)=>new Node(...args),timeText:()=>'',notificationsEnabled:false,toast(){},window:{addEventListener:(name,fn)=>listeners[name]=fn},setInterval:fn=>refresh=fn,
- api:async(path,options)=>{if(network.fail)throw Object.assign(new Error('offline'),{status:503});if(options){network.decisions.push(JSON.parse(options.body).decision);return {status:'decided'};}return {requests:network.rows};}});
- vm.runInContext(source,ctx);return{nodes,network,state,refresh,listeners};
+ api:async(path,options)=>{if(network.fail)throw Object.assign(new Error('offline'),{status:503});if(options){network.decisions.push(JSON.parse(options.body).decision);return {status:'decided'};}return {requests:network.rows,connections:network.connections};}});
+ vm.runInContext(source,ctx);return{nodes,network,state,refresh,listeners,Node,ctx};
 }
 const request={id:'one',status:'pending',handle:'sol',harness:'codex',room_title:'Room',session_id:'session',kind:'command',can_approve:true,details:{command:'<script>untrusted</script>'}};
 test('cards start collapsed, preserve expansion, and disappear after either decision even during stale refresh',async()=>{
@@ -82,4 +82,49 @@ test('pending dots survive collapsed panels and clear only after all decisions o
  assert.equal(f.nodes.get('#reopen-participants').dataset.approvalPending,'true');
  f.state.me=null;await f.listeners['covenant-login-change']();
  for(const selector of indicators)assert.equal(f.nodes.get(selector).dataset.approvalPending,'false');
+});
+
+ test('participant forwarding status updates after connection loss and clears on logout',async()=>{
+  const f=fixture();
+  await f.refresh();
+  const node=new f.Node('small','approval-connection');node.dataset.agentId='agent';
+  f.nodes.get('#agent-list').append(node);
+  f.network.connections=[{agent_id:'agent',harness:'codex',state:'connected'}];
+  await f.refresh();assert.equal(node.textContent,'Approvals: connected');
+  f.network.fail=true;await f.refresh();assert.equal(node.textContent,'Approvals: disconnected');
+  f.network.fail=false;f.network.connections=[{agent_id:'agent',harness:'claude',state:'ready'}];
+  await f.refresh();assert.equal(node.textContent,'Approvals: ready');
+  f.state.me=null;await f.refresh();assert.equal(node.textContent,'Approvals: setup required');
+ });
+
+
+test('chat dots track each room, survive rerenders and outages, and clear after decisions or logout',async()=>{
+ const f=fixture();await f.refresh();
+ function chat(id){
+  const button=new f.Node('button','room-item');button.dataset.roomId=id;
+  const dot=new f.Node('span','room-approval-dot');dot.hidden=true;button.append(dot);
+  f.nodes.get('#room-list').append(button);f.ctx.CovenantRoomApprovals.paint(button);
+  return {button,dot};
+ }
+ const a=chat('a'),b=chat('b'),c=chat('c');
+ f.network.rows=[{...request,room_id:'a'},{...request,id:'two',room_id:'a'},{...request,id:'three',room_id:'b'}];
+ await f.refresh();
+ assert.equal(a.dot.hidden,false);assert.equal(b.dot.hidden,false);assert.equal(c.dot.hidden,true);
+ assert.equal(a.dot.title,'2 pending approvals need your decision');
+ assert.equal(a.button.getAttribute('aria-description'),a.dot.title);
+ // Room selection and list refresh recreate buttons independently of approval polling.
+ const recreated=chat('a');assert.equal(recreated.dot.hidden,false);
+ f.network.fail=true;await f.refresh();assert.equal(a.dot.hidden,false);
+ f.network.fail=false;
+ for(const [id,decision] of [['one','approve'],['two','reject']]){
+  const control=f.nodes.get('#pending-approvals').querySelectorAll('button').find(n=>n.dataset.approvalAction===id+':'+decision);
+  await control.onclick();
+  assert.equal(a.dot.hidden,id==='two');assert.equal(recreated.dot.hidden,id==='two');
+  assert.equal(b.dot.hidden,false);
+ }
+ // Server-side resolution/expiry also clears the relevant room.
+ f.network.rows=[{...request,id:'three',room_id:'b',status:'expired'}];await f.refresh();
+ assert.equal(b.dot.hidden,true);
+ f.network.rows=[{...request,id:'four',room_id:'b'}];await f.refresh();assert.equal(b.dot.hidden,false);
+ f.state.me=null;await f.refresh();assert.equal(b.dot.hidden,true);
 });

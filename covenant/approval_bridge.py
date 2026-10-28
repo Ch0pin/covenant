@@ -85,7 +85,8 @@ def codex_prompt(event, items):
 
 
 class CodexApprovals:
-    def __init__(self, api, session_id):
+    def __init__(self, api, session_id, on_connected=None):
+        self.on_connected = on_connected
         self.api, self.session_id = api, session_id
         self.pending, self.items = {}, {}
         self.rpc_waiters = {}
@@ -177,6 +178,8 @@ class CodexApprovals:
                             job["resolved"] = True
                             job["task"].cancel()
                     self.items.clear()
+                    if method == "thread/closed":
+                        return
         finally:
             for future in self.rpc_waiters.values():
                 if not future.done():
@@ -195,13 +198,15 @@ class CodexApprovals:
                     raise RuntimeError("Open this Codex session first, then attach approvals")
                 # No configuration overrides and no new turn: subscribe to the already loaded session.
                 await self.rpc("thread/resume", {"threadId": self.session_id, "excludeTurns": True})
-                print("Covenant approvals attached. Keep this terminal open; Ctrl+C detaches.", flush=True)
+                if self.on_connected:
+                    self.on_connected()
+                else:
+                    print("Covenant approvals attached. Keep this terminal open; Ctrl+C detaches.", flush=True)
                 await self.reader
         finally:
             if self.reader:
                 self.reader.cancel()
-                with suppress(asyncio.CancelledError):
-                    await self.reader
+                await asyncio.gather(self.reader, return_exceptions=True)
             tasks = [job["task"] for job in self.pending.values()]
             for task in tasks:
                 task.cancel()
@@ -263,30 +268,24 @@ def launch(args, settings, db):
     with db.connect() as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='approval_bridges'").fetchone():
             raise ValueError("Restart Covenant at a convenient break to activate approval support")
+    if args.harness == "codex":
+        print("Codex approvals are managed by covenant serve. Join with session_id and check the participant approval status.")
+        return 0
     bridge_id, token = create_bridge(db, str(args.room), args.agent, args.harness, str(args.session) if args.session else None)
     try:
-        if args.harness == "codex":
-            async def run():
-                api = ApprovalClient(base_url, token)
-                try:
-                    await CodexApprovals(api, str(args.session)).run(codex_endpoint())
-                finally:
-                    await api.close()
-            asyncio.run(run())
-        else:
-            executable = shutil.which("claude")
-            if not executable:
-                raise ValueError("Claude executable is missing from PATH")
-            command = shlex.join([sys.executable, "-m", "covenant.approval_bridge"])
-            hook_settings = {"hooks": {"PermissionRequest": [{"hooks": [{"type": "command", "command": command, "timeout": 600}]}]}}
-            env = dict(os.environ, COVENANT_APPROVAL_URL=base_url, COVENANT_APPROVAL_TOKEN=token,
-                       MCP_PROTOCOL_NEGOTIATION="legacy")
-            extra = args.harness_args
-            if extra and extra[0] == "--":
-                extra = extra[1:]
-            result = subprocess.run([executable, "--settings", json.dumps(hook_settings),
-                                     "--dangerously-load-development-channels", "server:covenant", *extra], env=env)
-            return result.returncode
+        executable = shutil.which("claude")
+        if not executable:
+            raise ValueError("Claude executable is missing from PATH")
+        command = shlex.join([sys.executable, "-m", "covenant.approval_bridge"])
+        hook_settings = {"hooks": {"PermissionRequest": [{"hooks": [{"type": "command", "command": command, "timeout": 600}]}]}}
+        env = dict(os.environ, COVENANT_APPROVAL_URL=base_url, COVENANT_APPROVAL_TOKEN=token,
+                   MCP_PROTOCOL_NEGOTIATION="legacy")
+        extra = args.harness_args
+        if extra and extra[0] == "--":
+            extra = extra[1:]
+        result = subprocess.run([executable, "--settings", json.dumps(hook_settings),
+                                 "--dangerously-load-development-channels", "server:covenant", *extra], env=env)
+        return result.returncode
     finally:
         close_bridge(db, bridge_id)
     return 0

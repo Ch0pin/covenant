@@ -94,7 +94,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         db.initialize()
-        yield
+        from .automatic_approvals import ApprovalManager
+        manager = ApprovalManager(app, db, settings)
+        app.state.approval_manager = manager
+        await manager.start()
+        try:
+            yield
+        finally:
+            await manager.stop()
 
     app = FastAPI(title="Covenant", lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url=None)
@@ -535,6 +542,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # next_cursor remains the room watermark, independently of history selection.
             # Reconnecting agents must retain their previous processed cursor.
             if body.session_id:
+                from .automatic_approvals import store_binding
+                try:
+                    store_binding(conn, identity, "codex", str(body.session_id))
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
                 # Keep unqueued messages across reconnects. First registration starts
                 # after the history returned above, which the joining agent already reads.
                 conn.execute("""INSERT INTO delivery_bindings
@@ -642,7 +654,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 except TimeoutError:
                     pass
 
-    register_file_lock_routes(app, db, agent, room)
+    register_file_lock_routes(app, db, agent, room, operator)
     register_receipt_routes(app, db, agent, operator, room)
     register_thread_routes(app, db, agent, operator, room, message_dict)
 

@@ -257,10 +257,13 @@ function renderRooms() {
     button.append(element("div", "room-avatar", "#"));
     const content = element("div", "room-item-content"), line = element("div", "room-item-line");
     const meta = element("span", "room-item-meta"); meta.append(element("span", "room-item-time", timeText(room.updated_at)));
+    const approvalDot = element("span", "room-approval-dot"); approvalDot.hidden = true;
+    approvalDot.setAttribute("aria-hidden", "true"); meta.append(approvalDot);
     if (roomHasUnread(room)) {const dot = element("span", "room-unread"); dot.title = "Unread agent messages"; dot.setAttribute("aria-hidden", "true"); meta.append(dot);}
     line.append(element("strong", "", room.title), meta);
     content.append(line, element("small", "", room.preview || (room.status === "archived" ? "Archived conversation" : room.status === "paused" ? "Paused" : "Ready for your agents")));
     button.append(content); button.addEventListener("click", () => selectRoom(room.id).catch(e => toast(e.message))); row.append(button);
+    globalThis.CovenantRoomApprovals?.paint(button);
     const actions = element("div", "room-inline-actions");
     for (const [action, label, path] of [["archive", room.status === "archived" ? "Restore" : "Archive", room.status === "archived" ? "M4 10h16v10H4zM3 4h18v4H3zm9 12V10m-3 3 3-3 3 3" : "M4 10h16v10H4zM3 4h18v4H3zm5 10h4"], ["delete", "Delete", "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"]]) {
       const control = element("button", "room-inline-action" + (action === "delete" ? " delete-action" : "")); control.type = "button";
@@ -279,7 +282,7 @@ async function setFilter(archived) {closeRoomMenu(); state.archived = archived; 
 $("#active-tab").onclick = () => setFilter(false).catch(e => toast(e.message));
 $("#archived-tab").onclick = () => setFilter(true).catch(e => toast(e.message));
 function updateRoom(room) {
-  if ("file_locks" in room || state.room?.id !== room.id) renderFileLocks(room.file_locks);
+  if ("file_locks" in room || state.room?.id !== room.id) renderFileLocks(room.file_locks, room.id);
   state.room = room; applyPanelPreferences();
   if (room.status === "archived") clearReplyTarget();
   document.querySelectorAll(".reply-button").forEach(button => {button.disabled = room.status === "archived";});
@@ -593,7 +596,23 @@ function seenText(agent) {
   const seconds = Math.max(0, (Date.now() / 1000) - agent.last_seen);
   return seconds < 40 ? "Seen just now" : seconds < 3600 ? `Seen ${Math.floor(seconds / 60)} min ago` : "Seen " + new Date(agent.last_seen * 1000).toLocaleString();
 }
-function renderFileLocks(result) {
+const releasingFileLocks = new Set();
+async function releaseFileLock(lockId, roomId, button) {
+  if (releasingFileLocks.has(lockId) || state.room?.id !== roomId) return;
+  const generation = state.generation;
+  releasingFileLocks.add(lockId); button.disabled = true;
+  try {
+    const lease = await api(`/api/rooms/${roomId}/file-locks/${lockId}`);
+    if (state.room?.id !== roomId || state.generation !== generation) return;
+    const seconds = Math.max(0, Math.ceil(lease.expires_at - lease.server_time));
+    if (!confirm(`Release @${lease.owner}'s reservation for ${lease.paths.length} file(s)?\n\n${lease.paths.join("\n")}\n\nLease expires in ${seconds}s.\nThe owning agent may still be running and could continue editing. Release only after confirming it has stopped editing.`)) return;
+    const result = await api(`/api/rooms/${roomId}/file-locks/${lockId}/release`, {method: "POST"});
+    if (state.room?.id === roomId && state.generation === generation) renderFileLocks(result.file_locks);
+    toast(`Released ${result.released} file reservation${result.released === 1 ? "" : "s"}`);
+  } catch (error) {toast(error.message);}
+  finally {releasingFileLocks.delete(lockId); button.disabled = false;}
+}
+function renderFileLocks(result, roomId = state.room?.id) {
   const list = $("#file-lock-list"), empty = $("#file-lock-empty");
   list.replaceChildren();
   const locks = result?.locks || [];
@@ -613,7 +632,16 @@ function renderFileLocks(result) {
     expiry.dateTime = new Date(lock.expires_at * 1000).toISOString();
     expiry.title = `Expires ${new Date(lock.expires_at * 1000).toLocaleString()}`;
     const exact = element("span", "file-lock-exact", new Date(lock.expires_at * 1000).toLocaleTimeString());
-    item.append(owner, path, expiry, exact); list.append(item);
+    item.append(owner, path, expiry, exact);
+    if (lock.lock_id) {
+      const release = element("button", "file-lock-release quiet danger", "Release lock");
+      release.type = "button"; release.title = "Release this reservation and all files it covers";
+      release.setAttribute("aria-label", `Release ${lock.owner}'s reservation for ${lock.path}`);
+      release.disabled = releasingFileLocks.has(lock.lock_id);
+      release.onclick = () => releaseFileLock(lock.lock_id, roomId, release);
+      item.append(release);
+    }
+    list.append(item);
   }
 }
 function renderAgents() {
@@ -622,6 +650,11 @@ function renderAgents() {
   for (const agent of state.agents) {
     const row = element("div", "participant" + (agent.revoked ? " revoked" : ""));
     const info = element("div", "participant-info"); info.append(element("strong", "", "@" + agent.handle), element("small", "", seenText(agent)));
+    const approval = element("small", "approval-connection", "Approvals: setup required");
+    approval.dataset.agentId = agent.id;
+    approval.title = "Codex connects through its registered session. Claude needs the one-time setup command and a room join.";
+    info.append(approval);
+    globalThis.CovenantApprovalConnections?.paint(approval);
     row.append(senderAvatar(agent.handle), info); list.append(row);
     if (state.room.status !== "archived") {
       const controls = element("div", "participant-controls");

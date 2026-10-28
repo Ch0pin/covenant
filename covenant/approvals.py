@@ -40,7 +40,7 @@ class Finish(ApprovalInput):
     status: Literal["resolved", "cancelled"]
 
 
-def create_bridge(db, room_id, handle, harness, session_id=None):
+def create_bridge(db, room_id, handle, harness, session_id=None, expected_token_hash=None):
     """Called only by the local operator CLI, never by a room agent HTTP endpoint."""
     token, bridge_id, now = secrets.token_urlsafe(32), str(uuid4()), time.time()
     with db.connect() as conn:
@@ -48,7 +48,7 @@ def create_bridge(db, room_id, handle, harness, session_id=None):
         identity = conn.execute("""SELECT a.* FROM agents a JOIN rooms r ON r.id=a.room_id
             WHERE a.room_id=? AND a.handle=? AND a.revoked=0 AND r.status='active'""",
             (room_id, handle)).fetchone()
-        if not identity:
+        if not identity or (expected_token_hash is not None and identity["token_hash"] != expected_token_hash):
             raise ValueError("Choose an active room and an existing, non-revoked agent handle")
         conn.execute("INSERT INTO approval_bridges VALUES (?,?,?,?,?,?,?)", (
             bridge_id, identity["id"], digest(token), identity["token_hash"], harness,
@@ -84,6 +84,10 @@ def register_approval_routes(app, db, operator):
             (digest(token), time.time())).fetchone()
         if not row:
             raise HTTPException(401, "Approval bridge access ended")
+        linked = conn.execute("SELECT * FROM approval_sessions WHERE agent_id=?", (row["agent_id"],)).fetchone()
+        if linked and (linked["harness"] != row["harness"] or (row["session_id"] and linked["session_id"] != row["session_id"])
+                       or linked["agent_token_hash"] != row["agent_token_hash"]):
+            raise HTTPException(401, "Native session registration changed")
         if row["room_status"] != "active":
             raise HTTPException(409, "Approvals require an active room")
         return row
@@ -99,7 +103,8 @@ def register_approval_routes(app, db, operator):
                 WHERE q.status IN ('pending','decided','submitted') OR q.created_at>?
                 ORDER BY CASE WHEN q.status='pending' THEN 0 ELSE 1 END,q.created_at DESC LIMIT 100""",
                 (time.time() - 3600,)).fetchall()
-            return {"requests": [{**{k: row[k] for k in (
+            manager = getattr(app.state, "approval_manager", None)
+            return {"connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
                 "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at")},
                 **json.loads(row["payload"])} for row in rows]}
 
@@ -125,6 +130,9 @@ def register_approval_routes(app, db, operator):
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             owner = bridge(conn, request)
+            linked = conn.execute("SELECT session_id FROM approval_sessions WHERE agent_id=?", (owner["agent_id"],)).fetchone()
+            if linked and linked["session_id"] != body.session_id:
+                raise HTTPException(409, "Native session registration changed")
             prune(conn)
             if owner["session_id"] and owner["session_id"] != body.session_id:
                 raise HTTPException(409, "Harness session differs from the registered session")

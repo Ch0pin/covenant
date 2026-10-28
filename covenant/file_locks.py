@@ -39,9 +39,9 @@ class RenewLease(Lease):
 
 
 def visible_file_locks(conn, room_id):
-    """Read active reservations for the operator without exposing lease IDs."""
+    """Read active reservations and their release IDs for the authenticated operator."""
     now = time.time()
-    rows = conn.execute("""SELECT l.path, a.handle AS owner, l.expires_at
+    rows = conn.execute("""SELECT l.path, l.lock_id, a.handle AS owner, l.expires_at
         FROM file_locks l JOIN agents a ON a.id=l.agent_id JOIN rooms r ON r.id=a.room_id
         WHERE a.room_id=? AND a.revoked=0 AND r.status!='archived' AND l.expires_at>?
         ORDER BY a.handle,l.path LIMIT 501""", (room_id, now)).fetchall()
@@ -49,7 +49,7 @@ def visible_file_locks(conn, room_id):
             "server_time": now}
 
 
-def register_file_lock_routes(app, db, agent, room):
+def register_file_lock_routes(app, db, agent, room, operator):
     def prune(conn, now):
         # This also handles token rotation/revocation and room archive/delete cleanup.
         conn.execute("""DELETE FROM file_locks WHERE expires_at<=? OR agent_id IN (
@@ -59,6 +59,39 @@ def register_file_lock_routes(app, db, agent, room):
     def require_active(conn, rid):
         if room(conn, rid)["status"] != "active":
             raise HTTPException(409, "File locks can only be acquired in active rooms")
+
+    def operator_lease(conn, rid, lock_id):
+        room(conn, rid)
+        now = time.time()
+        prune(conn, now)
+        rows = conn.execute("""SELECT l.path,l.agent_id,l.expires_at,a.handle FROM file_locks l
+            JOIN agents a ON a.id=l.agent_id WHERE l.lock_id=? AND a.room_id=? ORDER BY l.path""",
+            (str(lock_id), rid)).fetchall()
+        if not rows:
+            raise HTTPException(409, "This reservation has ended or changed. Refresh the file locks.")
+        return rows, now
+
+    @app.get("/api/rooms/{room_id}/file-locks/{lock_id}")
+    async def inspect_lease(room_id: UUID, lock_id: UUID, request: Request):
+        operator(request)
+        with db.connect() as conn:
+            rows, now = operator_lease(conn, str(room_id), lock_id)
+            return {"lock_id": str(lock_id), "owner": rows[0]["handle"],
+                    "paths": [r["path"] for r in rows], "expires_at": rows[0]["expires_at"],
+                    "server_time": now}
+
+    @app.post("/api/rooms/{room_id}/file-locks/{lock_id}/release")
+    async def operator_release(room_id: UUID, lock_id: UUID, request: Request):
+        operator(request)
+        rid = str(room_id)
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows, _ = operator_lease(conn, rid, lock_id)
+            # Match this exact lease and owner. A stale confirmation must never
+            # release a replacement reservation on the same paths.
+            count = conn.execute("DELETE FROM file_locks WHERE lock_id=? AND agent_id=?",
+                                 (str(lock_id), rows[0]["agent_id"])).rowcount
+            return {"released": count, "file_locks": visible_file_locks(conn, rid)}
 
     @app.post("/{room_id}/file-locks/acquire")
     async def acquire(room_id: UUID, request: Request, body: AcquireLocks):
