@@ -219,6 +219,7 @@ async function enterWorkspace() {
     try {await selectRoom(requested); if (state.room?.status === "archived") await setFilter(true);}
     catch (error) {toast(error.message);}
   }
+  window.dispatchEvent(new Event("covenant-login-change"));
 }
 function setPasswordVisible(visible) {
   $("#login-password").type = visible ? "text" : "password";
@@ -649,7 +650,13 @@ function renderAgents() {
   $("#participant-count").textContent = state.agents.filter(a => !a.revoked).length + 1;
   for (const agent of state.agents) {
     const row = element("div", "participant" + (agent.revoked ? " revoked" : ""));
-    const info = element("div", "participant-info"); info.append(element("strong", "", "@" + agent.handle), element("small", "", seenText(agent)));
+    const info = element("div", "participant-info");
+    const name = element("div", "participant-name");
+    const dot = element("span", "participant-status-dot"); dot.dataset.level = "neutral"; dot.setAttribute("aria-hidden", "true");
+    name.append(element("strong", "", "@" + agent.handle), dot);
+    const status = element("small", "participant-status", "Status loading…"); status.dataset.agentId = agent.id;
+    info.append(name, status, element("small", "", seenText(agent)));
+    globalThis.CovenantParticipantStatus?.paint(agent.id, dot, status);
     const approval = element("small", "approval-connection", "Approvals: setup required");
     approval.dataset.agentId = agent.id;
     approval.title = "Codex connects through its registered session. Claude needs the one-time setup command and a room join.";

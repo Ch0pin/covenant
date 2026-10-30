@@ -165,3 +165,16 @@ dialog{background:var(--panel);border-color:var(--line)}
 
 .invite-option{display:flex;align-items:center;gap:10px;min-height:44px;margin:12px 0;font-size:12px;cursor:pointer}
 .invite-option input{appearance:auto;width:18px;height:18px;flex:0 0 18px;margin:0;padding:0;accent-color:var(--accent);box-shadow:none}
+
+[data-approval-expired="true"]:not([data-approval-pending="true"])::after{content:"";position:absolute;top:2px;right:2px;width:9px;height:9px;border-radius:50%;background:#d97706;box-shadow:0 0 0 2px var(--sidebar-bg);pointer-events:none}
+#expired-approvals-notice{width:100%;margin:8px 0;text-align:left}
+
+/* Participant status is separate from avatar colour and connection/approval details. */
+.participant-name{display:flex;align-items:center;gap:7px;min-width:0}
+.participant-name strong{overflow-wrap:anywhere}
+.participant-status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:var(--muted)}
+.participant-status-dot[data-level="ok"]{background:#16875d}
+.participant-status-dot[data-level="info"]{background:#4b8ce8}
+.participant-status-dot[data-level="warning"]{background:#d98a12}
+.participant-status-dot[data-level="error"]{background:#df4a55}
+.participant-info .participant-status{white-space:normal;overflow-wrap:anywhere;line-height:1.45;margin-top:3px;color:var(--text)}

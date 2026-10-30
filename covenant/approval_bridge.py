@@ -87,11 +87,37 @@ def codex_prompt(event, items):
 class CodexApprovals:
     def __init__(self, api, session_id, on_connected=None):
         self.on_connected = on_connected
+        self.on_status = None
+        self.status_task = None
+        self.status_revision = 0
         self.api, self.session_id = api, session_id
         self.pending, self.items = {}, {}
         self.rpc_waiters = {}
         self.websocket = None
         self.reader = None
+
+    def emit_status(self, method, params):
+        if self.on_status:
+            try:
+                self.on_status(method, params)
+            except (KeyError, TypeError, ValueError):
+                # Telemetry must not interrupt approval forwarding.
+                print("Native status unavailable for one event.", file=sys.stderr)
+
+    async def watch_status(self):
+        # Read-only native metadata: no model invocation and no agent polling.
+        while True:
+            revision = self.status_revision
+            try:
+                thread = (await self.rpc("thread/read", {"threadId": self.session_id, "includeTurns": False})).get("thread", {})
+                latest = await self.rpc("thread/turns/list", {"threadId": self.session_id, "limit": 1,
+                                                            "sortDirection": "desc", "itemsView": "notLoaded"})
+                turns = latest.get("data", [])
+                if revision == self.status_revision:
+                    self.emit_status("covenant/status-snapshot", {"status": thread.get("status"), "turn": turns[0] if turns else None})
+            except Exception:
+                self.emit_status("covenant/status-unavailable", {})
+            await asyncio.sleep(30)
 
     async def rpc(self, method, params):
         rid = "covenant-approval-" + str(uuid4())
@@ -108,6 +134,8 @@ class CodexApprovals:
 
     async def handle(self, event, job):
         aid = None
+        expired = False
+        job["resolution"] = asyncio.Event()
         try:
             payload = codex_prompt(event, self.items)
             if payload is None:
@@ -116,15 +144,23 @@ class CodexApprovals:
             job["aid"] = aid
             decision = await self.api.wait(aid)
             # The reader marks native resolutions synchronously, before doing any HTTP work.
-            if decision is None or job["resolved"]:
+            if job["resolved"]:
                 return
             # Reject denies this action. The protocol also accepts decline when the
             # native picker only advertises cancel; cancel interrupts the entire turn.
+            expired = decision is None
             answer = "accept" if decision == "approve" else "decline"
             result = ({"action": answer, "content": None}
                       if event["method"] == "mcpServer/elicitation/request"
                       else {"decision": answer})
             await self.websocket.send(json.dumps({"id": event["id"], "result": result}))
+            if expired:
+                # Expiry must resolve the native action, never interrupt the whole turn.
+                # A native event confirms closure; a concurrent native decision may win.
+                if not job["resolved"]:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(job["resolution"].wait(), 10)
+                return
             # Keep the request alive until the harness confirms resolution (or disconnects).
             while not job["resolved"]:
                 result = await self.api.request(f"/{aid}/take")
@@ -135,7 +171,7 @@ class CodexApprovals:
             print("Covenant approval forwarding unavailable; answer this prompt in Codex.", file=sys.stderr)
         finally:
             if aid:
-                await self.api.finish(aid, "resolved" if job["resolved"] else "cancelled")
+                await self.api.finish(aid, "expired_resolved" if expired and job.get("native_resolved") else "resolved" if job["resolved"] else "cancelled")
 
     async def read(self):
         try:
@@ -147,9 +183,15 @@ class CodexApprovals:
                         waiter.set_result(event)
                     continue
                 params = event.get("params", {})
+                if event["method"] == "account/rateLimits/updated":
+                    self.emit_status(event["method"], params)
                 if params.get("threadId") != self.session_id:
                     continue
                 method = event["method"]
+                if method in {"thread/status/changed", "turn/started", "turn/completed", "error",
+                              "model/safetyBuffering/updated", "model/verification", "thread/closed"}:
+                    self.status_revision += 1
+                    self.emit_status(method, params)
                 if method == "item/started":
                     item = params.get("item", {})
                     if item.get("id"):
@@ -160,6 +202,9 @@ class CodexApprovals:
                     job = self.pending.get(json.dumps(params.get("requestId")))
                     if job:
                         job["resolved"] = True
+                        job["native_resolved"] = True
+                        if job.get("resolution"):
+                            job["resolution"].set()
                         job["task"].cancel()
                 elif "id" in event and method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "mcpServer/elicitation/request"}:
                     key = json.dumps(event["id"])
@@ -194,6 +239,7 @@ class CodexApprovals:
                                               "capabilities": {"experimentalApi": True}})
                 await websocket.send(json.dumps({"method": "initialized", "params": {}}))
                 thread = (await self.rpc("thread/read", {"threadId": self.session_id, "includeTurns": False}))["thread"]
+                self.emit_status("covenant/status-snapshot", {"status": thread.get("status")})
                 if thread.get("status", {}).get("type") not in {"active", "idle"}:
                     raise RuntimeError("Open this Codex session first, then attach approvals")
                 # No configuration overrides and no new turn: subscribe to the already loaded session.
@@ -202,8 +248,13 @@ class CodexApprovals:
                     self.on_connected()
                 else:
                     print("Covenant approvals attached. Keep this terminal open; Ctrl+C detaches.", flush=True)
+                if self.on_status:
+                    self.status_task = asyncio.create_task(self.watch_status())
                 await self.reader
         finally:
+            if self.status_task:
+                self.status_task.cancel()
+                await asyncio.gather(self.status_task, return_exceptions=True)
             if self.reader:
                 self.reader.cancel()
                 await asyncio.gather(self.reader, return_exceptions=True)

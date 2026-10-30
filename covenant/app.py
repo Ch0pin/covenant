@@ -98,9 +98,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         manager = ApprovalManager(app, db, settings)
         app.state.approval_manager = manager
         await manager.start()
+        from .push import PushManager
+        push = PushManager(db, settings)
+        app.state.push_manager = push
+        await push.start()
         try:
             yield
         finally:
+            await push.stop()
             await manager.stop()
 
     app = FastAPI(title="Covenant", lifespan=lifespan, docs_url=None, redoc_url=None,
@@ -662,6 +667,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from .approvals import register_approval_routes
     register_approval_routes(app, db, operator)
+    from .participant_status import register_participant_status_routes
+    register_participant_status_routes(app, db, operator, room)
+
+    from .push import register_push_routes
+    register_push_routes(app, db, operator)
+
+    @app.get("/service-worker.js")
+    async def service_worker():
+        return FileResponse(STATIC / "service-worker.js", media_type="application/javascript",
+                            headers={"Service-Worker-Allowed": "/"})
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

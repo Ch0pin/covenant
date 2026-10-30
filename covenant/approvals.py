@@ -37,7 +37,7 @@ class Decision(ApprovalInput):
 
 
 class Finish(ApprovalInput):
-    status: Literal["resolved", "cancelled"]
+    status: Literal["resolved", "cancelled", "expired_resolved"]
 
 
 def create_bridge(db, room_id, handle, harness, session_id=None, expected_token_hash=None):
@@ -97,16 +97,30 @@ def register_approval_routes(app, db, operator):
         operator(request)
         with db.connect() as conn:
             prune(conn)
-            rows = conn.execute("""SELECT q.*,a.handle,a.room_id,r.title AS room_title,b.harness,b.session_id
+            rows = conn.execute("""SELECT q.*,a.handle,a.room_id,r.title AS room_title,b.harness,b.session_id,
+                COALESCE(o.native_resolved,0) AS native_resolved,o.dismissed_at
                 FROM approval_requests q JOIN approval_bridges b ON b.id=q.bridge_id
                 JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
-                WHERE q.status IN ('pending','decided','submitted') OR q.created_at>?
-                ORDER BY CASE WHEN q.status='pending' THEN 0 ELSE 1 END,q.created_at DESC LIMIT 100""",
-                (time.time() - 3600,)).fetchall()
+                LEFT JOIN approval_outcomes o ON o.request_id=q.id
+                WHERE q.status IN ('pending','decided','submitted')
+                OR (q.status='expired' AND o.dismissed_at IS NULL) OR q.created_at>?
+                ORDER BY CASE WHEN q.status='pending' THEN 0 WHEN q.status='expired' AND o.dismissed_at IS NULL THEN 1 ELSE 2 END,q.created_at DESC LIMIT 100""",
+                (time.time() - 86400,)).fetchall()
             manager = getattr(app.state, "approval_manager", None)
             return {"connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
-                "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at")},
+                "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at", "expires_at", "native_resolved", "dismissed_at")},
                 **json.loads(row["payload"])} for row in rows]}
+
+    @app.post("/api/approvals/{approval_id}/dismiss")
+    async def dismiss(approval_id: UUID, request: Request):
+        operator(request)
+        with db.connect() as conn:
+            row = conn.execute("SELECT status FROM approval_requests WHERE id=?", (str(approval_id),)).fetchone()
+            if not row or row["status"] != "expired":
+                raise HTTPException(409, "Only expired notices can be dismissed")
+            conn.execute("""INSERT INTO approval_outcomes(request_id,dismissed_at) VALUES (?,?)
+                ON CONFLICT(request_id) DO UPDATE SET dismissed_at=excluded.dismissed_at""", (str(approval_id), time.time()))
+        return {"ok": True}
 
     @app.post("/api/approvals/{approval_id}/decision")
     async def decide(approval_id: UUID, request: Request, body: Decision):
@@ -177,6 +191,11 @@ def register_approval_routes(app, db, operator):
     async def finish(approval_id: UUID, request: Request, body: Finish):
         with db.connect() as conn:
             owner = bridge(conn, request)
+            if body.status == "expired_resolved":
+                conn.execute("""INSERT INTO approval_outcomes(request_id,native_resolved)
+                    SELECT id,1 FROM approval_requests WHERE id=? AND bridge_id=? AND status='expired'
+                    ON CONFLICT(request_id) DO UPDATE SET native_resolved=1""", (str(approval_id), owner["id"]))
+                return {"ok": True}
             conn.execute("UPDATE approval_requests SET status=? WHERE id=? AND bridge_id=? AND status IN ('pending','decided','submitted')",
                          (body.status, str(approval_id), owner["id"]))
         return {"ok": True}

@@ -12,10 +12,13 @@ class Settings:
     bind_host: str = "127.0.0.1"
     port: int = 6666
     public_base_url: str = "https://example.trycloudflare.com"
+    status_ack_warning_seconds: int = 120
 
     def __post_init__(self):
         if not 1 <= self.port <= 65535:
             raise ValueError("PORT must be between 1 and 65535")
+        if not 30 <= self.status_ack_warning_seconds <= 86400:
+            raise ValueError("STATUS_ACK_WARNING_SECONDS must be between 30 and 86400")
         u = urlsplit(self.public_base_url)
         if (u.scheme not in {"http", "https"} or not u.hostname or u.username
                 or u.password or u.path not in {"", "/"} or u.query or u.fragment):
@@ -48,4 +51,5 @@ class Settings:
             db = ROOT / db
         return cls(database=db, bind_host=values.get("BIND_HOST", "127.0.0.1"),
                    port=int(values.get("PORT", "6666")),
+                   status_ack_warning_seconds=int(values.get("STATUS_ACK_WARNING_SECONDS", "120")),
                    public_base_url=values.get("PUBLIC_BASE_URL", "https://example.trycloudflare.com"))

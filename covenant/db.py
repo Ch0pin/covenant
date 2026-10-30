@@ -77,6 +77,25 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     decision TEXT, decided_by TEXT, created_at REAL NOT NULL, expires_at REAL NOT NULL,
     alive_until REAL NOT NULL, decided_at REAL, UNIQUE(bridge_id,request_key)
 );
+CREATE TABLE IF NOT EXISTS approval_outcomes (
+    request_id TEXT PRIMARY KEY REFERENCES approval_requests(id) ON DELETE CASCADE,
+    native_resolved INTEGER NOT NULL DEFAULT 0, dismissed_at REAL
+);
+CREATE TABLE IF NOT EXISTS push_keys (
+    id INTEGER PRIMARY KEY CHECK(id=1), private_key TEXT NOT NULL, public_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY, subscription TEXT NOT NULL,
+    session_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE,
+    origin TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_deliveries (
+    endpoint TEXT NOT NULL REFERENCES push_subscriptions(endpoint) ON DELETE CASCADE,
+    request_id TEXT NOT NULL REFERENCES approval_requests(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0, sent_at REAL,
+    PRIMARY KEY(endpoint,request_id,kind)
+);
 CREATE INDEX IF NOT EXISTS approvals_bridge ON approval_requests(bridge_id);
 CREATE INDEX IF NOT EXISTS message_replies_parent ON message_replies(reply_to,message_id);
 CREATE INDEX IF NOT EXISTS receipts_agent ON message_receipts(agent_id,message_id);

@@ -304,7 +304,7 @@ def test_codex_mcp_forms_and_authentication_stay_in_harness(patch):
     assert codex_prompt(event, {}) is None
 
 
-@pytest.mark.parametrize("decision,action", [("approve", "accept"), ("reject", "decline")])
+@pytest.mark.parametrize("decision,action", [("approve", "accept"), ("reject", "decline"), (None, "decline")])
 def test_codex_mcp_permission_reader_and_native_response(decision, action):
     async def run():
         api = FakeAPI(decision)
@@ -333,5 +333,56 @@ def test_codex_mcp_permission_reader_and_native_response(decision, action):
         assert sent == [{"id": 0, "result": {"action": action, "content": None}}]
         assert api.payload["session_id"] == "session"
         assert api.payload["kind"] == "tool"
-        assert api.finished == [("request", "resolved")]
+        assert api.finished == [("request", "expired_resolved" if decision is None else "resolved")]
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind,method", [("command", "item/commandExecution/requestApproval"), ("file", "item/fileChange/requestApproval")])
+def test_expiry_declines_native_action_and_persists_notice(approvals, kind, method):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    async def run():
+        api = ApprovalClient("http://127.0.0.1", auth["Authorization"][7:])
+        await api.client.aclose()
+        api.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=auth)
+        original_wait = api.wait
+        async def expired(aid):
+            with app.state.db.connect() as conn:
+                conn.execute("UPDATE approval_requests SET expires_at=0 WHERE id=?", (aid,))
+            return await original_wait(aid)
+        api.wait = expired
+        listener = CodexApprovals(api, payload["session_id"])
+        sent = []
+        delivered = asyncio.Event()
+        class Socket:
+            def __aiter__(self): return self.events()
+            async def events(self):
+                yield json.dumps({"id": 42, "method": method, "params": {"threadId": payload["session_id"], "command": "printf harmless"}})
+                await delivered.wait()
+                yield json.dumps({"method": "serverRequest/resolved", "params": {"threadId": payload["session_id"], "requestId": 42}})
+            async def send(self, wire):
+                sent.append(json.loads(wire)); delivered.set()
+        listener.websocket = Socket()
+        await asyncio.wait_for(listener.read(), 2)
+        await asyncio.gather(*(j["task"] for j in listener.pending.values()), return_exceptions=True)
+        assert sent == [{"id": 42, "result": {"decision": "decline"}}]
+        await api.close()
+    asyncio.run(run())
+    row = client.get("/api/approvals").json()["requests"][0]
+    assert row["status"] == "expired" and row["native_resolved"] == 1
+    assert row["decision"] is None and row["dismissed_at"] is None
+    aid = row["id"]
+    assert client.post(f"/api/approvals/{aid}/decision", headers=csrf, json={"decision": "approve"}).status_code == 409
+    assert client.post(f"/api/approvals/{aid}/dismiss").status_code == 403
+    assert client.post(f"/api/approvals/{aid}/dismiss", headers=csrf).status_code == 200
+    assert client.get("/api/approvals").json()["requests"][0]["dismissed_at"]
+
+
+def test_old_expired_notice_survives_until_dismissed(approvals):
+    client, app, csrf, *_ = approvals
+    aid = submit(approvals)
+    with app.state.db.connect() as conn:
+        conn.execute("UPDATE approval_requests SET created_at=?,expires_at=0 WHERE id=?", (time.time()-172800, aid))
+    row = client.get("/api/approvals").json()["requests"][0]
+    assert row["id"] == aid and row["status"] == "expired" and not row["native_resolved"]
+    client.post(f"/api/approvals/{aid}/dismiss", headers=csrf)
+    assert not client.get("/api/approvals").json()["requests"]

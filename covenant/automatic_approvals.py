@@ -13,6 +13,7 @@ from .approval_bridge import ApprovalClient, CodexApprovals
 from .approvals import close_bridge, create_bridge
 from .auth import digest
 from .delivery import codex_endpoint
+from .participant_status import NativeStatus
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class ApprovalManager:
         self.app, self.db, self.settings = app, db, settings
         self.worker_factory = worker_factory
         self.jobs, self.states = {}, {}
+        self.native_states = {}
         self.task = None
         self.lock = None
 
@@ -111,6 +113,12 @@ class ApprovalManager:
     def status(self):
         return [dict(value, agent_id=key) for key, value in self.states.items()]
 
+    def participant_status(self, agent_id, binding, now):
+        record = self.native_states.get(agent_id)
+        if not record or not binding or record['fingerprint'] != (binding['session_id'], binding['agent_token_hash']):
+            return None
+        return record['status'].view(self.states.get(agent_id, {}).get('state') == 'connected', now)
+
     def set_state(self, row, state, detail=''):
         self.states[row['agent_id']] = {'harness': row['harness'], 'state': state, 'detail': detail}
 
@@ -130,6 +138,7 @@ class ApprovalManager:
                     await job['task']
                 del self.jobs[aid]
         self.states = {aid: status for aid, status in self.states.items() if aid in desired}
+        self.native_states = {aid: status for aid, status in self.native_states.items() if aid in desired}
         for row in candidates:
             aid = row['agent_id']
             if aid not in desired:
@@ -161,8 +170,11 @@ class ApprovalManager:
                 api.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
                     base_url='http://127.0.0.1', headers={'Authorization': 'Bearer ' + token}, timeout=5)
                 self.set_state(row, 'connecting')
+                native = NativeStatus()
+                self.native_states[row['agent_id']] = {'fingerprint': (row['session_id'], row['token_hash']), 'status': native}
                 worker = self.worker_factory(api, row['session_id'],
                     on_connected=lambda: self.set_state(row, 'connected'))
+                worker.on_status = native.consume
                 await worker.run(codex_endpoint())
             except asyncio.CancelledError:
                 raise
@@ -197,6 +209,7 @@ class ApprovalManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.jobs.clear()
+        self.native_states.clear()
         if self.lock:
             fcntl.flock(self.lock, fcntl.LOCK_UN)
             self.lock.close()

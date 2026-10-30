@@ -128,3 +128,15 @@ test('chat dots track each room, survive rerenders and outages, and clear after 
  f.network.rows=[{...request,id:'four',room_id:'b'}];await f.refresh();assert.equal(b.dot.hidden,false);
  f.state.me=null;await f.refresh();assert.equal(b.dot.hidden,true);
 });
+
+test('expired approvals remain visibly discoverable outside the collapsed list',async()=>{
+ const f=fixture();f.network.rows=[{...request,status:'expired',native_resolved:0}];await f.refresh();
+ const notice=f.nodes.get('#expired-approvals-notice');
+ assert.equal(notice.hidden,false);assert.match(notice.textContent,/1 expired/);
+ await f.nodes.get('#toggle-approvals').onclick();assert.equal(notice.hidden,false);
+ await notice.onclick();assert.equal(f.nodes.get('#approvals-dialog').open,true);
+ assert.ok(f.nodes.get('#approvals-list').querySelectorAll('p').some(n=>n.textContent.includes('unconfirmed')));
+ f.network.rows=[{...request,status:'expired',native_resolved:1,dismissed_at:123}];await f.refresh();
+ assert.equal(notice.hidden,true);
+ assert.ok(f.nodes.get('#approvals-list').querySelectorAll('p').some(n=>n.textContent.includes('confirmed this request')));
+});

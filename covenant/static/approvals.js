@@ -37,6 +37,8 @@
     $("#room-list").querySelectorAll(".room-item").forEach(paintRoomApproval);
   }
   globalThis.CovenantRoomApprovals = {paint: paintRoomApproval};
+  const expiredNotice = $("#expired-approvals-notice");
+  expiredNotice.onclick = () => {dialog.showModal(); return refreshApprovals();};
   let currentRequests = [];
   const localDecisions = new Map();
   const pendingList = $("#pending-approvals"), collapse = $("#toggle-approvals");
@@ -51,7 +53,8 @@
     for (const selector of ["#reopen-participants", "#toggle-participants", "#toggle-approvals", "#mobile-details"]) {
       const control = $(selector);
       control.dataset.approvalPending = String(count > 0);
-      control.setAttribute("aria-description", count ? `${count} pending approval${count === 1 ? "" : "s"} need your decision` : "");
+      const expired = currentRequests.filter(r => r.status === "expired" && !r.dismissed_at).length;
+      control.setAttribute("aria-description", [count ? `${count} pending approval${count === 1 ? "" : "s"} need your decision` : "", expired ? `${expired} expired approvals to review` : ""].filter(Boolean).join(". "));
     }
     globalThis.CovenantMobile?.setApprovalCount(count);
   }
@@ -63,6 +66,12 @@
     currentRequests = requests;
     signature = next; list.replaceChildren(); pendingList.replaceChildren();
     const pending = requests.filter(r => r.status === "pending");
+    const expired = requests.filter(r => r.status === "expired" && !r.dismissed_at);
+    expiredNotice.hidden = !expired.length;
+    expiredNotice.textContent = `${expired.length} expired approval${expired.length === 1 ? "" : "s"} · Review`;
+    for (const selector of ["#reopen-participants", "#toggle-participants", "#toggle-approvals", "#mobile-details"]) {
+      $(selector).dataset.approvalExpired = String(expired.length > 0);
+    }
     showPendingCount(pending.length);
     updateRoomApprovals(pending);
     if (!pending.length) pendingList.append(element("p", "muted", "No pending approvals."));
@@ -75,6 +84,19 @@
       card.append(summary);
       const status = `${labels[request.status] || request.status}${request.decision ? " · " + (request.decision === "approve" ? "Approved once" : "Rejected") : ""}`;
       card.append(element("p", "approval-status", status));
+      if (request.status === "pending" && request.expires_at) card.append(element("p", "muted", `Expires at ${timeText(request.expires_at)}`));
+      if (request.status === "expired") {
+        summary.append(element("span", "danger", "Expired"));
+        card.append(element("p", "approval-status", request.native_resolved ? "The harness confirmed this request is closed." : "Native resolution is unconfirmed. Check the agent’s native approval prompt; it may still be waiting."));
+        if (!request.dismissed_at) {
+          const dismiss = element("button", "quiet", "Dismiss notice"); dismiss.type = "button";
+          dismiss.onclick = async () => {
+            try {await api(`/api/approvals/${request.id}/dismiss`, {method: "POST"}); signature = ""; await refreshApprovals();}
+            catch (error) {toast(error.message);}
+          };
+          card.append(dismiss);
+        }
+      }
       const content = request.details;
       const preview = content.command || content.tool_input?.command || content.item?.command;
       if (content.tool_name) card.append(element("strong", "approval-tool", content.tool_name));
@@ -120,6 +142,8 @@
   }
   async function refreshApprovals() {
     if (!state.me) {
+      expiredNotice.hidden = true;
+      for (const selector of ["#reopen-participants", "#toggle-participants", "#toggle-approvals", "#mobile-details"]) $(selector).dataset.approvalExpired = "false";
       updateConnections([]);
       updateRoomApprovals([]);
       signature = ""; known.clear(); localDecisions.clear(); currentRequests = []; epoch = null; showPendingCount(0); list.replaceChildren(); pendingList.replaceChildren();
@@ -139,7 +163,7 @@
       const pending = requests.filter(r => r.status === "pending");
 
       for (const request of pending) {
-        if (!known.has(request.id) && notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
+        if (!known.has(request.id) && !globalThis.CovenantPush?.active && notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
           try {
             const notification = new Notification(`Covenant · Approval needed`, {body: `${request.handle} in ${request.room_title}`, tag: `approval-${request.id}`, icon: "/static/icon.png"});
             visibleNotifications.add(notification);
@@ -165,6 +189,18 @@
       }
     } finally {busy = false;}
   }
+  globalThis.CovenantApprovals = {open: async (id, room) => {
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(room)) return;
+    await setFilter(false); await selectRoom(room); await refreshApprovals();
+    if (globalThis.CovenantMobile?.isMobile) globalThis.CovenantMobile.open("participants");
+    else {panelPreferences.participants = false; applyPanelPreferences();}
+    if (pendingList.hidden) collapse.click();
+    const request = currentRequests.find(r => r.id === id);
+    if (!request || request.status !== "pending") dialog.showModal();
+    const card = [...pendingList.querySelectorAll(".approval-card"), ...list.querySelectorAll(".approval-card")].find(c => c.dataset.approvalId === id);
+    if (card) {card.open = true; card.scrollIntoView?.({block: "nearest"});}
+    if (!request) toast("This approval has ended or is no longer available.");
+  }};
   window.addEventListener("covenant-login-change", refreshApprovals);
   button.onclick = () => {dialog.showModal(); refreshApprovals();};
   setInterval(refreshApprovals, 2000);
