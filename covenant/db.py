@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     decision TEXT, decided_by TEXT, created_at REAL NOT NULL, expires_at REAL NOT NULL,
     alive_until REAL NOT NULL, decided_at REAL, UNIQUE(bridge_id,request_key)
 );
+CREATE TABLE IF NOT EXISTS room_approval_policy (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1)),
+    updated_by TEXT NOT NULL, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS approval_auto_decisions (
+    request_id TEXT PRIMARY KEY REFERENCES approval_requests(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS approval_outcomes (
     request_id TEXT PRIMARY KEY REFERENCES approval_requests(id) ON DELETE CASCADE,
     native_resolved INTEGER NOT NULL DEFAULT 0, dismissed_at REAL

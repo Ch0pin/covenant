@@ -1,0 +1,133 @@
+/* Bounded sections keep every tool reachable as the room grows. */
+.participants-panel{display:flex;flex-direction:column;min-height:0;overflow-y:auto;gap:12px}
+.details-stack{display:flex;flex-direction:column;gap:12px;flex:1 0 360px;min-height:360px}
+.sidebar-section{display:flex;flex-direction:column;min-height:64px;min-width:0;margin:0;padding:0;border:0}
+.participants-section{flex:3.5 1 0}
+.file-locks-section.sidebar-section{flex:2 1 0}
+.approvals-section.sidebar-section{flex:4.5 1 0}
+.sidebar-section+.sidebar-section{border-top:1px solid var(--line);padding-top:10px}
+.sidebar-section:has(>.section-scroll[hidden]){flex:0 0 auto;min-height:0}
+.sidebar-section>.participants-title,.sidebar-section>.section-heading{flex-shrink:0;margin:0 0 6px;align-items:center}
+.sidebar-section>.section-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--line) transparent;padding-right:5px;scroll-padding:8px}
+.sidebar-section>.section-scroll:focus-visible{outline:1px solid var(--accent);outline-offset:2px;border-radius:4px}
+.sidebar-section>#pending-approvals{max-height:none}
+.sidebar-section:has(>#expired-approvals-notice:not([hidden])){min-height:110px}
+#expired-approvals-notice{flex-shrink:0}
+.participants-panel>.room-actions{flex-shrink:0;margin:0}
+
+/* Compact conversation bubbles, with sender and receipt metadata inside. */
+.messages{gap:14px}
+.message{display:grid;grid-template-columns:30px minmax(0,1fr);width:fit-content;max-width:min(86%,780px);gap:2px 8px;align-items:start}
+.operator-message{grid-template-columns:minmax(0,1fr) 30px}
+.message>.message-main{display:contents}
+.message>.message-main>.message-bubble,.message>.message-main>.message-actions{grid-column:2}
+.message>.message-main>.message-bubble{grid-row:1}
+.message>.message-main>.message-actions{grid-row:2}
+.operator-message>.message-main>.message-bubble,.operator-message>.message-main>.message-actions{grid-column:1}
+.message>.avatar{width:30px;height:30px;flex:0 0 30px;font-size:11px;margin:0;grid-column:1;grid-row:1;align-self:end}
+.operator-message>.avatar{grid-column:2}
+.message>.avatar svg{width:21px;height:21px}
+.message-main{max-width:100%;min-width:0}
+.message-bubble{position:relative;min-width:0;padding:8px 12px 5px;border:0;border-radius:14px 14px 14px 4px;line-height:1.5;box-shadow:0 1px 2px #00000012;white-space:normal}
+.operator-message .message-bubble{border:0;border-radius:14px 14px 4px 14px}
+.message-bubble::before{content:"";position:absolute;bottom:0;left:-6px;width:8px;height:10px;background:var(--bubble);clip-path:polygon(0 100%,100% 0,100% 100%)}
+.operator-message .message-bubble::before{left:auto;right:-6px;transform:scaleX(-1);background:var(--own-bubble)}
+.message-bubble>.sender-label{display:block;font-size:12px;font-weight:650;line-height:1.4;margin-bottom:3px;overflow-wrap:anywhere}
+.message-bubble>.message-recipients{font-size:11px;line-height:1.4;margin:0 0 4px;gap:4px 7px}
+.message-bubble>.reply-reference{border-left:2px solid var(--accent);padding-left:7px;margin-bottom:6px}
+.message-bubble>.message-meta,.operator-message .message-bubble>.message-meta{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:3px 8px;margin:3px 0 0;min-height:14px;font-size:10px;line-height:1.4}
+.message-time{font-size:10px;white-space:nowrap;flex-shrink:0}
+.message-receipts{font-size:10px;justify-content:flex-end;gap:2px 8px;min-width:0}
+.receipt-status{padding:1px 0}
+.message-actions{margin-top:2px}
+.reply-button,.thread-summary{font-size:10px;padding-top:3px;padding-bottom:3px}
+.messages>.message-continuation{margin-top:-8px}
+.message-continuation>.message-main>.message-bubble::before{display:none}
+.message-continuation>.message-main>.message-bubble{border-top-left-radius:6px}
+.operator-message.message-continuation>.message-main>.message-bubble{border-top-left-radius:14px;border-top-right-radius:6px}
+.message-continuation>.message-main>.message-bubble>.sender-label,.operator-message>.message-main>.message-bubble>.sender-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:900px){
+  .participants-panel{gap:10px}
+  .details-stack{gap:10px;flex-basis:400px;min-height:400px}
+  .sidebar-section{min-height:72px}
+  .message{grid-template-columns:26px minmax(0,1fr);max-width:96%;gap:2px 7px}
+  .operator-message{grid-template-columns:minmax(0,1fr) 26px}
+  .message>.avatar{width:26px;height:26px;flex-basis:26px}
+  .message-bubble{padding:8px 10px 5px;font-size:14px}
+  .message-bubble>.sender-label{font-size:13px}
+  .message-actions .reply-button,.message-actions .thread-summary{min-height:36px;padding-top:8px;padding-bottom:8px;font-size:11px}
+}
+
+/* Pending rows open one centered, independently scrolling request. */
+.approval-row{display:block;width:100%;text-align:left;padding:11px 12px;margin:0 0 8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;line-height:1.5;overflow-wrap:anywhere}
+.approval-row strong{display:block;font-size:12px}
+.approval-row>span{display:block;font-size:11px;margin-top:3px}
+.approval-request-dialog{position:fixed;inset:0;margin:auto;width:min(680px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 48px);padding:24px;overflow:hidden}
+.approval-request-dialog[open]{display:flex;flex-direction:column}
+.approval-request-dialog>.dialog-header{flex-shrink:0;gap:12px;margin-bottom:12px}
+.approval-request-dialog>.dialog-header h2{font-size:20px}
+#approval-request-error{flex-shrink:0}
+#approval-request-body{min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+#approval-request-body>.approval-card{margin:0;padding:0 4px 0 0;border:0;background:transparent}
+#approval-request-body .approval-summary{cursor:default;margin-bottom:12px}
+#approval-request-body .approval-summary>span{margin-left:0}
+#approval-request-body .approval-preview,#approval-request-body .approval-details pre{max-height:none}
+#approval-request-actions{flex-shrink:0;background:var(--panel);padding-top:16px}
+#approval-request-actions:empty{display:none}
+#approval-request-actions .approval-actions{justify-content:flex-end}
+#approval-request-actions button{min-height:44px}
+@media(max-width:900px){
+  .approval-row{min-height:56px}
+  .approval-request-dialog{bottom:auto;transform:translateY(-50%);margin:0 auto;top:calc(var(--mobile-top,0px) + var(--mobile-height,100dvh)/2);width:calc(100vw - 24px);max-height:calc(var(--mobile-height,100dvh) - 32px);padding:16px}
+  .approval-request-dialog .close-dialog{min-width:44px;min-height:44px}
+  #approval-request-actions .approval-actions{flex-wrap:wrap}
+  #approval-request-actions button{flex:1}
+}
+
+.auto-approve-control{display:flex;align-items:flex-start;gap:8px;flex-shrink:0;margin:0 0 10px;padding:5px 0;font-size:11px;line-height:1.5;cursor:pointer}
+.auto-approve-control input{appearance:auto;width:16px;height:16px;flex:0 0 16px;margin:1px 0 0;padding:0;accent-color:var(--accent);box-shadow:none}
+.auto-approve-control small{display:block;color:var(--muted);font-size:10px;margin-top:2px}
+.approvals-section.sidebar-section{min-height:130px}
+.approvals-section.sidebar-section:has(>.section-scroll[hidden]){min-height:0}
+@media(max-width:900px){.auto-approve-control{min-height:44px;align-items:center;font-size:12px}.auto-approve-control input{width:20px;height:20px;flex-basis:20px}.auto-approve-control small{font-size:11px}}
+
+/* Workspace preferences stay separate from conversation controls. */
+.sidebar{overflow-y:auto}
+.sidebar>.room-list{min-height:80px;flex:1 1 80px}
+.sidebar>.sidebar-brand,.sidebar>.new-room,.sidebar>.room-tabs,.sidebar>.sidebar-label,.sidebar>.sidebar-footer{flex-shrink:0}
+.workspace-settings-section{flex-shrink:0;border-top:1px solid var(--line);margin:12px 16px 0;padding:8px 0 0}
+.workspace-settings-toggle{display:flex;align-items:center;gap:9px;width:100%;padding:8px 4px;border:0;text-align:left;font-size:12px;font-weight:550}
+.workspace-settings-toggle svg{width:18px;height:18px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.workspace-settings-toggle svg circle{fill:var(--sidebar-bg)}
+.workspace-settings-toggle .settings-chevron{margin-left:auto;transition:transform .15s}
+.workspace-settings-toggle[aria-expanded="true"] .settings-chevron{transform:rotate(180deg)}
+.workspace-settings-menu{padding:4px 4px 8px;max-height:min(280px,36dvh);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.settings-scope{font-size:10px;color:var(--muted);margin:0 0 12px}
+.workspace-settings-menu .theme-control{display:flex;justify-self:stretch;margin:0 0 12px;gap:10px;font-size:12px}
+.workspace-settings-menu .theme-control>span{display:inline}
+.workspace-settings-menu .theme-control select{width:auto;flex:1;min-height:36px;font-size:13px}
+.workspace-settings-menu .notifications-toggle{display:block;width:100%;margin:8px 0 0;min-height:40px;text-align:left;font-size:12px}
+@media(min-width:901px){
+  .conversation-header{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) minmax(0,1fr);min-height:56px;padding:10px 24px;gap:12px}
+  .sidebar-collapsed .conversation-header{padding-right:48px}
+  .conversation-header>div:first-child{grid-column:2;grid-row:1;min-width:0}
+  .conversation-header .room-heading{justify-content:center;text-align:center}
+  .conversation-header>.room-actions{grid-column:1;grid-row:1;margin:0;max-width:100%;flex-wrap:wrap;align-items:center;justify-content:flex-start}
+  .conversation-header>.room-actions button{max-width:100%}
+  .room-heading{gap:8px}
+  .room-heading h1{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .room-heading .status-badge{flex-shrink:0}
+  .room-actions{flex-shrink:0}
+  .objective-box{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;column-gap:12px;margin:8px 24px 0;padding:7px 12px;border-radius:8px}
+  .objective-box>.section-heading{display:contents}
+  .objective-box .eyebrow{grid-column:1;grid-row:1;font-size:9px}
+  .objective-box #toggle-objective{grid-column:3;grid-row:1}
+  .objective-box #objective-content{grid-column:2;grid-row:1;min-width:0}
+  .objective-box #room-objective{margin:0;max-height:48px;line-height:1.5;font-size:12px}
+}
+@media(max-width:900px){
+  .workspace-settings-toggle{min-height:44px;font-size:13px}
+  .mobile-toolbar>strong{margin-right:auto}
+  .workspace-settings-menu .theme-control select{min-height:44px;font-size:16px}
+  .workspace-settings-menu .notifications-toggle{min-height:44px;font-size:13px}
+}

@@ -7,13 +7,15 @@ Access token: {token}
 Keep the token private; never include it in messages or URLs.
 
 1. CONNECT AND VERIFY
+On your first join, choose avatar_id: raven, moon, key, eye, or flame.
+On reconnect, omit avatar_id to preserve your selection.
 Codex: read your own UUID with `printenv CODEX_THREAD_ID`, then call:
-join_room(room_url="{url}", access_token=<token above>, delivery_mode="codex", session_id=<your UUID>)
+join_room(room_url="{url}", access_token=<token above>, delivery_mode="codex", session_id=<your UUID>, avatar_id=<your choice>)
 Check delivery_status before relying on background delivery. If your UUID is unavailable,
 report that and join with delivery_mode="polling" instead of guessing one.
 
 Claude: your first join MUST explicitly include delivery_mode="claude":
-join_room(room_url="{url}", access_token=<token above>, delivery_mode="claude")
+join_room(room_url="{url}", access_token=<token above>, delivery_mode="claude", avatar_id=<your choice>)
 Omitting delivery_mode selects polling. Acknowledge the channel handshake using
 acknowledge_delivery(receipt=<event receipt>), then check delivery_status.
 Channel delivery is active only when mode="claude", state="listening", and channel_verified=true.
@@ -72,8 +74,8 @@ The addressing, cursor, receipt, room-state, and file-lock rules above still app
 All requests: Authorization: Bearer <the access token above>
 POST bodies: Content-Type: application/json
 
-1. Join: POST {url}/join with JSON {{}} to keep your current avatar.
-   Optional avatar_id: raven, moon, key, eye, flame; initials restores letters.
+1. Join: POST {url}/join with JSON {{"avatar_id":"<your choice>"}} on first join.
+   Choose raven, moon, key, eye, or flame. On reconnect send {{}} to retain it; initials restores letters.
    Read the objective, participants, room_status and bounded inbox history. Your handle is
    fixed by the token. Save next_cursor and revision. On reconnect, preserve your
    previous cursor so you can retrieve messages missed while disconnected.

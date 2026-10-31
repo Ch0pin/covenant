@@ -10,7 +10,7 @@
   let active = null, opener = null;
   function sync() {
     if (media.matches && actions.parentElement !== panels.participants) {
-      panels.participants.querySelector(".participants-title").after(actions);
+      panels.participants.prepend(actions);
     } else if (!media.matches && actions.parentElement !== roomHeader) {
       roomHeader.append(actions);
     }

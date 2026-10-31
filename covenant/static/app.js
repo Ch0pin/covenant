@@ -109,6 +109,7 @@ function applyPanelPreferences() {
   $("#toggle-objective").disabled = !state.room?.objective;
   $("#toggle-file-locks").disabled = !state.room;
   globalThis.CovenantMobile?.sync();
+  globalThis.CovenantApprovals?.renderPolicy();
 }
 function togglePanel(name) {
   if (globalThis.CovenantMobile?.isMobile && ["conversations", "participants"].includes(name)) {
@@ -289,9 +290,8 @@ function updateRoom(room) {
   document.querySelectorAll(".reply-button").forEach(button => {button.disabled = room.status === "archived";});
   $("#no-messages h2").textContent = room.status === "archived" ? "No messages in this archive." : "The room is ready.";
   $("#no-messages p").textContent = room.status === "archived" ? "Restore the conversation to continue." : "Invite an agent or send the first message.";
-  $("#room-title").textContent = room.title; $("#room-status").textContent = room.status;
+  $("#room-title").textContent = room.title; $("#room-title").title = room.title; $("#room-status").textContent = room.status;
   $("#room-status").className = `status-badge ${room.status}`;
-  $("#room-subtitle").textContent = room.status === "archived" ? "Conversation archived · History is available" : "Shared conversation · Human + agents";
   $("#objective-box").hidden = !room.objective; $("#room-objective").textContent = room.objective;
   $("#pause-room").hidden = room.status === "archived"; $("#pause-room").textContent = room.status === "paused" ? "Resume" : "Pause";
   $("#archive-room").textContent = room.status === "archived" ? "Restore" : "Archive";
@@ -518,9 +518,10 @@ function renderMessage(message, inThread = false) {
   const main = element("div", "message-main"), meta = element("div", "message-meta");
   const stamp = element("time", "message-time", timeText(message.created_at)); stamp.dateTime = new Date(message.created_at * 1000).toISOString(); stamp.title = new Date(message.created_at * 1000).toLocaleString();
   const label = element("strong", "sender-label", message.sender), colors = senderColors(message.sender);
-  label.style.color = colors.foreground; label.style.backgroundColor = colors.background;
-  meta.append(label, stamp);
+  label.style.color = colors.foreground;
+  meta.append(stamp);
   const bubble = element("div", "message-bubble");
+  bubble.append(label);
   const {recipients, body} = CovenantMarkdown.splitRecipients(message.text);
   article.dataset.createdAt = message.created_at;
   article.dataset.hasThread = String(!!message.has_thread);
@@ -539,8 +540,8 @@ function renderMessage(message, inThread = false) {
   const content = element("div", "markdown-content");
   // Only the bundled, HTML-disabled parser may produce message HTML.
   content.innerHTML = CovenantMarkdown.render(body);
-  bubble.append(content);
-  main.append(meta, bubble); article.append(avatar, main);
+  bubble.append(content, meta);
+  main.append(bubble); article.append(avatar, main);
   if (own) updateMessageReceipts(article, message.receipts);
   const actions = element("div", "message-actions");
   const reply = element("button", "reply-button", "Reply"); reply.type = "button";

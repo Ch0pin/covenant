@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import digest
 
@@ -34,6 +34,10 @@ class NativeRequest(ApprovalInput):
 
 class Decision(ApprovalInput):
     decision: Literal["approve", "reject"]
+
+
+class ApprovalPolicy(ApprovalInput):
+    auto_approve: StrictBool
 
 
 class Finish(ApprovalInput):
@@ -73,12 +77,33 @@ def prune(conn):
         WHERE b.expires_at<=? OR a.revoked=1 OR a.token_hash!=b.agent_token_hash OR r.status!='active')""", (now,))
 
 
+def auto_approve_pending(conn, room_id):
+    """Apply an operator's room policy within the caller's write transaction."""
+    policy = conn.execute("SELECT * FROM room_approval_policy WHERE room_id=? AND auto_approve=1", (room_id,)).fetchone()
+    if not policy:
+        return 0
+    now = time.time()
+    rows = conn.execute("""SELECT q.id FROM approval_requests q
+        JOIN approval_bridges b ON b.id=q.bridge_id JOIN agents a ON a.id=b.agent_id
+        JOIN rooms r ON r.id=a.room_id LEFT JOIN approval_sessions s ON s.agent_id=a.id
+        WHERE r.id=? AND r.status='active' AND a.revoked=0 AND a.token_hash=b.agent_token_hash
+        AND b.expires_at>? AND q.status='pending' AND q.expires_at>? AND q.alive_until>?
+        AND json_extract(q.payload,'$.can_approve')=1
+        AND (s.agent_id IS NULL OR (s.harness=b.harness AND s.session_id=b.session_id AND s.agent_token_hash=a.token_hash))""",
+        (room_id, now, now, now)).fetchall()
+    for row in rows:
+        conn.execute("UPDATE approval_requests SET status='decided',decision='approve',decided_by=?,decided_at=? WHERE id=? AND status='pending'",
+                     (policy['updated_by'], now, row['id']))
+        conn.execute("INSERT OR IGNORE INTO approval_auto_decisions VALUES (?)", (row['id'],))
+    return len(rows)
+
+
 def register_approval_routes(app, db, operator):
     def bridge(conn, request):
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not token or len(token) > 256:
             raise HTTPException(401, "Approval bridge credential required")
-        row = conn.execute("""SELECT b.*,r.status AS room_status FROM approval_bridges b
+        row = conn.execute("""SELECT b.*,a.room_id,r.status AS room_status FROM approval_bridges b
             JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
             WHERE b.token_hash=? AND b.expires_at>? AND a.revoked=0 AND a.token_hash=b.agent_token_hash""",
             (digest(token), time.time())).fetchone()
@@ -92,23 +117,45 @@ def register_approval_routes(app, db, operator):
             raise HTTPException(409, "Approvals require an active room")
         return row
 
+    @app.patch("/api/rooms/{room_id}/approval-policy")
+    async def set_approval_policy(room_id: UUID, request: Request, body: ApprovalPolicy):
+        username = operator(request)
+        rid = str(room_id)
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT status FROM rooms WHERE id=?", (rid,)).fetchone()
+            if not current:
+                raise HTTPException(404, "Conversation not found")
+            if body.auto_approve and current['status'] != 'active':
+                raise HTTPException(409, "Restore the conversation before enabling auto-approve")
+            conn.execute("""INSERT INTO room_approval_policy VALUES (?,?,?,?)
+                ON CONFLICT(room_id) DO UPDATE SET auto_approve=excluded.auto_approve,
+                updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                (rid, int(body.auto_approve), username, time.time()))
+            prune(conn)
+            approved = auto_approve_pending(conn, rid)
+        return {"auto_approve": body.auto_approve, "approved_count": approved}
+
     @app.get("/api/approvals")
     async def list_approvals(request: Request):
         operator(request)
         with db.connect() as conn:
             prune(conn)
             rows = conn.execute("""SELECT q.*,a.handle,a.room_id,r.title AS room_title,b.harness,b.session_id,
-                COALESCE(o.native_resolved,0) AS native_resolved,o.dismissed_at
+                COALESCE(o.native_resolved,0) AS native_resolved,o.dismissed_at,
+                (automatic.request_id IS NOT NULL) AS auto_approved
                 FROM approval_requests q JOIN approval_bridges b ON b.id=q.bridge_id
                 JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
                 LEFT JOIN approval_outcomes o ON o.request_id=q.id
+                LEFT JOIN approval_auto_decisions automatic ON automatic.request_id=q.id
                 WHERE q.status IN ('pending','decided','submitted')
                 OR (q.status='expired' AND o.dismissed_at IS NULL) OR q.created_at>?
                 ORDER BY CASE WHEN q.status='pending' THEN 0 WHEN q.status='expired' AND o.dismissed_at IS NULL THEN 1 ELSE 2 END,q.created_at DESC LIMIT 100""",
                 (time.time() - 86400,)).fetchall()
             manager = getattr(app.state, "approval_manager", None)
-            return {"connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
-                "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at", "expires_at", "native_resolved", "dismissed_at")},
+            return {"auto_approve_rooms": {p["room_id"]: bool(p["auto_approve"]) for p in conn.execute("SELECT room_id,auto_approve FROM room_approval_policy")},
+                    "connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
+                "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at", "expires_at", "native_resolved", "dismissed_at", "auto_approved")},
                 **json.loads(row["payload"])} for row in rows]}
 
     @app.post("/api/approvals/{approval_id}/dismiss")
@@ -167,6 +214,7 @@ def register_approval_routes(app, db, operator):
             conn.execute("""INSERT INTO approval_requests
                 (id,bridge_id,request_key,payload,created_at,expires_at,alive_until) VALUES (?,?,?,?,?,?,?)""",
                 (aid, owner["id"], body.request_key, payload, now, now + REQUEST_SECONDS, now + LEASE_SECONDS))
+            auto_approve_pending(conn, owner["room_id"])
             return {"id": aid}
 
     @app.post("/approval-bridge/requests/{approval_id}/take")

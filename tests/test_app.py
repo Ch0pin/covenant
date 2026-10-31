@@ -520,7 +520,11 @@ def test_invitation_formats_and_renewal_keep_identity_and_authentication(setup):
         assert mcp.count(ticket["token"]) == 1 and ticket["token"] not in http
         assert "Handle: format_test" in mcp
         claude = mcp.split("Claude:", 1)[1].split("2. RECEIVE", 1)[0]
-        assert re.search(r'join_room\([^\n]*delivery_mode="claude"\)', claude)
+        assert re.search(r'join_room\([^\n]*delivery_mode="claude"[^\n]*avatar_id=<your choice>\)', claude)
+        assert 'session_id=<your UUID>, avatar_id=<your choice>' in mcp
+        assert 'On reconnect, omit avatar_id to preserve your selection.' in mcp
+        for avatar in ('raven', 'moon', 'key', 'eye', 'flame'):
+            assert avatar in mcp and avatar in http
         assert 'channel_verified=true' in claude and 'state="listening"' in claude
         assert "HTTP fallback (" not in mcp and "Authorization: Bearer" not in mcp
         # Every advertised HTTP endpoint targets the same room as this invitation.

@@ -80,6 +80,8 @@ Approval requests expire after 10 minutes (or sooner if their connection is lost
 
 Keep Covenant running. Native approvals appear under **Pending approvals** in the right panel. Approve once or Reject applies to that request only. Pausing/archiving a room or revoking access invalidates pending requests. Sessions on another computer require a local connector; this automatic setup uses the server's local harnesses.
 
+**Auto-approve all requests** is off by default. Enabling it approves pending and future supported requests from every agent in that room, including commands, file changes, and MCP tools. The setting stays on until switched off and works with the browser closed. History labels these decisions **Auto-approved**. Expired requests and requests requiring approval in the native harness stay outside this setting; switching it off does not undo decisions already made.
+
 ## Mobile app and approval alerts
 
 Open your Covenant HTTPS address in Chrome and select **Install app** when offered, or use Chrome's **Add to home screen → Install** menu. Covenant opens from its home-screen icon in a standalone window with the same chat and operator controls.
