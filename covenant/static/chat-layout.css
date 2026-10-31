@@ -118,12 +118,12 @@
   .room-heading h1{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .room-heading .status-badge{flex-shrink:0}
   .room-actions{flex-shrink:0}
-  .objective-box{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;column-gap:12px;margin:8px 24px 0;padding:7px 12px;border-radius:8px}
+  .conversation-header>.objective-box{grid-column:3;grid-row:1;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 8px;min-width:0;margin:0;padding:0 0 0 12px;border-left:1px solid var(--line);border-radius:0;background:transparent}
   .objective-box>.section-heading{display:contents}
   .objective-box .eyebrow{grid-column:1;grid-row:1;font-size:9px}
-  .objective-box #toggle-objective{grid-column:3;grid-row:1}
-  .objective-box #objective-content{grid-column:2;grid-row:1;min-width:0}
-  .objective-box #room-objective{margin:0;max-height:48px;line-height:1.5;font-size:12px}
+  .objective-box #toggle-objective{grid-column:2;grid-row:1 / span 2}
+  .objective-box #objective-content{grid-column:1;grid-row:2;min-width:0}
+  .objective-box #room-objective{margin:0;max-height:32px;line-height:16px;font-size:11px}
 }
 @media(max-width:900px){
   .workspace-settings-toggle{min-height:44px;font-size:13px}
