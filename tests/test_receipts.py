@@ -79,7 +79,7 @@ def test_background_scans_do_not_claim_delivery_and_codex_ack_does(setup):
     assert row["status"] == "delivered" and row["delivery_mode"] == "codex"
 
 
-def test_errors_are_visible_and_success_clears_them_without_downgrade(setup):
+def test_polling_receipt_success_preserves_channel_warning_until_recovery(setup):
     client, _, _, headers, rid, (alice, _) = setup
     mid = operator_send(client, rid, headers)["id"]
     event(client, rid, alice, mid, "error", mode="codex", error="Session unavailable")
@@ -91,7 +91,10 @@ def test_errors_are_visible_and_success_clears_them_without_downgrade(setup):
     assert row["delivery_state"] == "fallback" and row["delivery_error"] == "Receipt timeout"
     client.get(f"/{rid}/messages?after={mid}&timeout=0", headers=bearer(alice))
     row = receipts(client, rid, mid)[0]
-    assert row["last_error"] is None and row["delivery_error"] is None and row["current_mode"] == "polling"
+    assert row["last_error"] is None and row["delivery_error"] == "Receipt timeout" and row["current_mode"] == "claude"
+    client.post(f"/{rid}/delivery-status", headers=bearer(alice), json={"mode": "claude", "state": "listening"})
+    row = receipts(client, rid, mid)[0]
+    assert row["delivery_error"] is None and row["delivery_state"] == "listening"
     event(client, rid, alice, mid, "error", error="Late retry")
     assert receipts(client, rid, mid)[0]["status"] == "delivered"
     assert receipts(client, rid, mid)[0]["last_error"] is None

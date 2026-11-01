@@ -12,6 +12,7 @@ import httpx
 from .approval_bridge import ApprovalClient, CodexApprovals
 from .approvals import close_bridge, create_bridge
 from .auth import digest
+from .db import ensure_session_owners
 from .delivery import codex_endpoint
 from .participant_status import NativeStatus
 
@@ -29,22 +30,29 @@ def bind_session(db, room_url, token, harness, session_id):
             AND a.joined_at IS NOT NULL''', (rid, digest(token))).fetchone()
         if not agent:
             return False
-        store_binding(conn, agent, harness, session_id, allow_move=True)
+        store_binding(conn, agent, harness, session_id)
     return True
 
 
-def store_binding(conn, agent, harness, session_id, *, allow_move=False):
-    """Record an authenticated join atomically with its room/session binding."""
-    if not allow_move:
-        owner = conn.execute("""SELECT s.agent_id FROM approval_sessions s
-            JOIN agents a ON a.id=s.agent_id JOIN rooms r ON r.id=a.room_id
-            WHERE s.harness=? AND s.session_id=? AND s.agent_id!=? AND a.revoked=0
-            AND s.agent_token_hash=a.token_hash AND r.status!='archived'""",
-            (harness, session_id, agent['id'])).fetchone()
-        if owner:
-            raise ValueError("This native session is already linked to another participant. Revoke its previous invitation before moving it.")
-    # One native session belongs to one participant at a time. A local rejoin
-    # explicitly moves that session; close outstanding requests on the old link.
+def store_binding(conn, agent, harness, session_id):
+    """Keep invitation ownership stable; only a new operator-issued token releases it."""
+    ensure_session_owners(conn)
+    owner = conn.execute("SELECT * FROM participant_session_owners WHERE agent_id=? AND agent_token_hash=?",
+                         (agent['id'], agent['token_hash'])).fetchone()
+    if owner and (owner['harness'], owner['session_id']) != (harness, session_id):
+        raise ValueError("This invitation belongs to another native session. Keep the main session connected; ask the operator to renew the token for reassignment. Subagents need separate invitations.")
+    other = conn.execute("""SELECT o.agent_id FROM participant_session_owners o
+        JOIN agents a ON a.id=o.agent_id JOIN rooms r ON r.id=a.room_id
+        WHERE o.harness=? AND o.session_id=? AND o.agent_id!=? AND a.revoked=0
+        AND o.agent_token_hash=a.token_hash AND r.status!='archived'""",
+        (harness, session_id, agent['id'])).fetchone()
+    if other:
+        raise ValueError("This native session is already linked to another participant. Revoke its previous invitation before moving it.")
+    # Stale credential generations and released participants cannot retain a session.
+    conn.execute('DELETE FROM participant_session_owners WHERE agent_id=? OR (harness=? AND session_id=?)',
+                 (agent['id'], harness, session_id))
+    conn.execute('INSERT INTO participant_session_owners VALUES (?,?,?,?,?)',
+                 (agent['id'], harness, session_id, agent['token_hash'], owner['created_at'] if owner else time.time()))
     old = conn.execute('''SELECT agent_id FROM approval_sessions
         WHERE agent_id=? OR (harness=? AND session_id=?)''',
         (agent['id'], harness, session_id)).fetchall()

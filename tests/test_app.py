@@ -419,8 +419,9 @@ def test_delivery_reconnect_preserves_pending_and_replaces_old_connection(setup)
     assert delivery_get(client, rid, alice, new).json()["messages"] == [pending]
     with TestClient(create_app(settings), base_url=settings.public_base_url) as restarted:
         assert delivery_get(restarted, rid, alice, new).json()["messages"] == [pending]
-    # An ordinary client may explicitly switch back to polling with its same token.
-    plain = client.post(f"/{rid}/join", headers=bearer(alice), json={}).json()
+    # Only the owning session may switch its background connection to polling.
+    assert client.post(f"/{rid}/join", headers=bearer(alice), json={}).status_code == 409
+    plain = client.post(f"/{rid}/join", headers=bearer(alice), json={"owner_session_id": new["session_id"]}).json()
     assert plain["delivery"] == {"mode": "polling"}
     assert pending in plain["messages"]
     assert delivery_get(client, rid, alice, new).status_code == 409
@@ -438,7 +439,7 @@ def test_waiting_delivery_observes_access_lifecycle(setup, ending):
         if ending in {"revoke", "rotate"}:
             client.post(f"/api/rooms/{rid}/agents/{alice['id']}/{ending}", headers=headers)
         elif ending == "replace":
-            register_delivery(client, rid, alice)
+            register_delivery(client, rid, alice, binding["session_id"])
         else:
             client.patch(f"/api/rooms/{rid}", headers=headers, json={"status": "archived"})
         response = waiting.result(timeout=2)

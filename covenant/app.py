@@ -65,11 +65,14 @@ class JoinRequest(Input):
     history_scope: Literal["inbox", "all"] = "inbox"
     session_id: UUID | None = None
     connection_id: UUID | None = None
+    owner_session_id: UUID | None = None
 
     @model_validator(mode="after")
     def paired_registration(self):
         if (self.session_id is None) != (self.connection_id is None):
             raise ValueError("Supply both session_id and connection_id for Codex delivery")
+        if self.owner_session_id and self.session_id:
+            raise ValueError("Use owner_session_id only for a polling fallback")
         return self
 
 
@@ -482,6 +485,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conn.execute("DELETE FROM file_locks WHERE agent_id=?", (str(agent_id),))
             conn.execute("UPDATE agents SET token_hash=?, revoked=0, joined_at=NULL, last_seen=NULL WHERE id=?",
                          (digest(token), str(agent_id)))
+            conn.execute("DELETE FROM participant_session_owners WHERE agent_id=?", (str(agent_id),))
+            conn.execute("DELETE FROM approval_sessions WHERE agent_id=?", (str(agent_id),))
+            conn.execute("DELETE FROM delivery_bindings WHERE agent_id=?", (str(agent_id),))
+            conn.execute("UPDATE approval_bridges SET expires_at=0 WHERE agent_id=?", (str(agent_id),))
+            conn.execute("""UPDATE approval_requests SET status='cancelled' WHERE status IN ('pending','decided','submitted')
+                AND bridge_id IN (SELECT id FROM approval_bridges WHERE agent_id=?)""", (str(agent_id),))
             bump(conn, rid)
         await notify(rid)
         return {"token": token, "handle": row["handle"],
@@ -517,7 +526,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             identity = agent(conn, request, rid)
-            if body.session_id and room(conn, rid)["status"] == "archived":
+            from .db import ensure_session_owners
+            from .automatic_approvals import store_binding
+            ensure_session_owners(conn)
+            owner = conn.execute("SELECT * FROM participant_session_owners WHERE agent_id=? AND agent_token_hash=?",
+                                 (identity["id"], identity["token_hash"])).fetchone()
+            native_session = body.session_id or body.owner_session_id
+            if native_session:
+                try:
+                    store_binding(conn, identity, "codex", str(native_session))
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
+            elif owner and conn.execute("SELECT 1 FROM delivery_bindings WHERE agent_id=?", (identity["id"],)).fetchone():
+                raise HTTPException(409, "This invitation has an owning session. A polling fallback must supply its owner_session_id; subagents need separate invitations.")
+            if native_session and room(conn, rid)["status"] == "archived":
                 raise HTTPException(409, "Restore this conversation before enabling delivery")
             conn.execute("UPDATE agents SET joined_at=COALESCE(joined_at,?),last_seen=? WHERE id=?",
                          (now, now, identity["id"]))
@@ -542,18 +564,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result.update(messages=catch_up["messages"], history_truncated=catch_up["has_more"],
                           history_scope=body.history_scope, next_before=catch_up["next_before"],
                           handle=identity["handle"], avatar_id=avatar_id)
-            result["capabilities"] = {"message_receipts": True}
-            conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
-                ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
-                (identity["id"], "codex" if body.session_id else "polling", "joined", None, now))
+            result["capabilities"] = {"message_receipts": True, "session_ownership": True}
+            if native_session or not owner:
+                conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
+                    ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
+                    (identity["id"], "codex" if body.session_id else "polling", "joined", None, now))
             # next_cursor remains the room watermark, independently of history selection.
             # Reconnecting agents must retain their previous processed cursor.
             if body.session_id:
-                from .automatic_approvals import store_binding
-                try:
-                    store_binding(conn, identity, "codex", str(body.session_id))
-                except ValueError as exc:
-                    raise HTTPException(409, str(exc)) from None
                 # Keep unqueued messages across reconnects. First registration starts
                 # after the history returned above, which the joining agent already reads.
                 conn.execute("""INSERT INTO delivery_bindings
@@ -631,7 +649,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 seen = [r[0] for r in conn.execute("SELECT message_id FROM message_receipts WHERE agent_id=? AND message_id<=? AND delivered_at IS NULL", (identity["id"], after))]
                 record_receipt(conn, identity["id"], seen, "delivered", "polling")
                 conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
-                    ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
+                    ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at
+                    WHERE agent_delivery_status.mode NOT IN ('codex','claude')
+                       OR agent_delivery_status.state NOT IN ('awaiting_confirmation','retrying','fallback','stopped')""",
                     (identity["id"], "polling", "listening", None, time.time()))
         deadline = asyncio.get_running_loop().time() + timeout
         async with conditions[rid]:

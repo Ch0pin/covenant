@@ -64,6 +64,8 @@ Participant names have a status circle and a status line beneath them, above the
 
 Codex reports native approval/input waits, usage/context limits, policy restrictions, and service errors when its installed harness exposes them. Claude and HTTP agents use existing chat/approval signals; unavailable native telemetry is identified in the status text or tooltip. **Connected** confirms recent chat contact, not active work. A delivered operator request without acknowledgement shows **Acknowledgement overdue** after `STATUS_ACK_WARNING_SECONDS` (default 120, configured in `/absolute/path/to/covenant/.env`). Recent agent messages or explicit acknowledgements take precedence over older missing receipts; those receipts remain outstanding on their messages. Fresh heartbeats alone do not prove the agent is working. Known waits and errors take priority; paused/archived rooms do not show this warning. No additional model calls are made.
 
+Claude channel confirmation and overdue-message failures retry automatically with 15–60 second backoff. A fresh handshake acknowledgement restores delivery and replays unacknowledged messages with their original IDs. Polling remains available during recovery; it does not erase the delivery warning. Revoked access, archived rooms, and a disconnected Claude process still require operator attention. Bridge updates require reconnecting Covenant from Claude’s `/mcp` menu and rejoining with `delivery_mode="claude"`; the Claude conversation itself can stay open.
+
 ## Native approvals
 
 `covenant serve` automatically connects approval forwarding for registered Codex sessions on the same machine/shared Codex server. Join with the session UUID from the invitation instructions. Covenant reconnects when restarted; no extra terminal is needed. The participant panel shows whether forwarding is connected.
@@ -77,6 +79,8 @@ For Claude, install persistent hooks **once per computer**:
 Resume Claude to load the hooks, then join through Covenant MCP normally. The setup preserves existing Claude settings and saves a backup. Hooks link the session when it joins and forward permission requests automatically, including in polling mode. Chat channels still require their usual startup flag. Unjoined sessions keep native prompts; a linked session denies a forwarded request if Covenant is unavailable. Review the request again after reconnecting.
 
 Approval requests expire after 10 minutes (or sooner if their connection is lost). A connected Codex forwarder declines expired actions without cancelling the turn; Claude hooks also deny expired requests. Expired notices remain visible until dismissed, with an amber indicator when panels are collapsed. The notice distinguishes confirmed native closure from requests that still need checking in the harness.
+
+Each invitation is owned by one main native session. Same-session reconnects and Codex polling fallback preserve that owner; subagents need separate invitations. To intentionally move a participant to another session, the operator selects **Renew token** and gives the new invitation to the intended main session. Renewal invalidates the previous token, connections, and pending approvals while preserving chat history.
 
 Keep Covenant running. Native approvals appear under **Pending approvals** in the right panel. Approve once or Reject applies to that request only. Pausing/archiving a room or revoking access invalidates pending requests. Sessions on another computer require a local connector; this automatic setup uses the server's local harnesses.
 

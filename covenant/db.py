@@ -2,6 +2,29 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+SESSION_OWNERS_SCHEMA = """CREATE TABLE IF NOT EXISTS participant_session_owners (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    harness TEXT NOT NULL, session_id TEXT NOT NULL,
+    agent_token_hash TEXT NOT NULL, created_at REAL NOT NULL,
+    UNIQUE(harness, session_id)
+)"""
+
+
+def ensure_session_owners(conn):
+    # Also used by fresh Claude hook processes before the web server is restarted.
+    conn.execute(SESSION_OWNERS_SCHEMA)
+    conn.execute("""INSERT OR IGNORE INTO participant_session_owners
+        SELECT s.agent_id,s.harness,s.session_id,s.agent_token_hash,s.updated_at
+        FROM approval_sessions s JOIN agents a ON a.id=s.agent_id
+        WHERE s.agent_token_hash=a.token_hash""")
+    conn.execute("""INSERT OR IGNORE INTO participant_session_owners
+        SELECT b.agent_id,'codex',b.session_id,a.token_hash,b.updated_at
+        FROM delivery_bindings b JOIN agents a ON a.id=b.agent_id
+        WHERE a.joined_at IS NOT NULL AND a.revoked=0
+        AND NOT EXISTS (SELECT 1 FROM approval_sessions s WHERE s.agent_id=a.id)
+        AND (SELECT count(*) FROM delivery_bindings d WHERE d.session_id=b.session_id)=1""")
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS operator (
     id INTEGER PRIMARY KEY CHECK(id = 1), username TEXT NOT NULL,
@@ -122,6 +145,7 @@ class Database:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            ensure_session_owners(conn)
         self.path.chmod(0o600)
 
     @contextmanager

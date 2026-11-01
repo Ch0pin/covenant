@@ -249,7 +249,7 @@ def test_claude_inactive_link_denies_and_failed_join_does_not_register(isolated,
     assert result['hookSpecificOutput']['decision']['behavior'] == 'deny'
 
 
-def test_authenticated_joins_replace_binding_preserve_polling_and_require_fresh_token(isolated):
+def test_authenticated_joins_preserve_owner_polling_and_require_fresh_token(isolated):
     settings, db, sid, rid, aid, token = isolated
     from covenant.approvals import create_bridge
     app = create_app(settings)
@@ -262,14 +262,15 @@ def test_authenticated_joins_replace_binding_preserve_polling_and_require_fresh_
             bid, bridge_token = create_bridge(db, rid, 'tester', 'codex', sid)
             new_sid = str(uuid4())
             join['session_id'] = new_sid
-            assert (await client.post('/' + rid + '/join', headers=headers, json=join)).status_code == 200
+            assert (await client.post('/' + rid + '/join', headers=headers, json=join)).status_code == 409
             with db.connect() as conn:
-                assert conn.execute('SELECT session_id FROM approval_sessions').fetchone()[0] == new_sid
-                assert conn.execute('SELECT expires_at FROM approval_bridges WHERE id=?', (bid,)).fetchone()[0] == 0
+                assert conn.execute('SELECT session_id FROM approval_sessions').fetchone()[0] == sid
+                assert conn.execute('SELECT expires_at FROM approval_bridges WHERE id=?', (bid,)).fetchone()[0] > time.time()
             # Polling is a message transport fallback, not a request to disable approvals.
-            assert (await client.post('/' + rid + '/join', headers=headers, json={})).status_code == 200
+            assert (await client.post('/' + rid + '/join', headers=headers, json={})).status_code == 409
+            assert (await client.post('/' + rid + '/join', headers=headers, json={'owner_session_id': sid})).status_code == 200
             with db.connect() as conn:
-                assert conn.execute('SELECT session_id FROM approval_sessions').fetchone()[0] == new_sid
+                assert conn.execute('SELECT session_id FROM approval_sessions').fetchone()[0] == sid
                 assert conn.execute('SELECT count(*) FROM delivery_bindings').fetchone()[0] == 0
                 conn.execute('UPDATE agents SET token_hash=? WHERE id=?', (digest('replacement'), aid))
             manager = ApprovalManager(app, db, settings)
@@ -290,6 +291,11 @@ def test_session_reassignment_does_not_revive_previous_codex_link(isolated):
             (other, rid, 'other', digest(other_token), time.time(), time.time()))
         conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?)', (aid, sid, str(uuid4()), 0, time.time()))
     assert bind_session(db, settings.public_base_url + '/' + rid, token, 'codex', sid)
+    with pytest.raises(ValueError, match='already linked'):
+        bind_session(db, settings.public_base_url + '/' + rid, other_token, 'codex', sid)
+    # Operator revocation releases the old participant's session.
+    with db.connect() as conn:
+        conn.execute('UPDATE agents SET revoked=1 WHERE id=?', (aid,))
     assert bind_session(db, settings.public_base_url + '/' + rid, other_token, 'codex', sid)
     manager = ApprovalManager(create_app(settings), db, settings)
     assert [r['agent_id'] for r in manager.candidates()] == [other]

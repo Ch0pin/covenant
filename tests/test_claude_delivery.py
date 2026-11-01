@@ -35,7 +35,7 @@ async def handshake(worker, events, client):
     assert worker.status()['channel_verified']
 
 
-def test_handshake_requires_receipt_and_silent_drop_falls_back(tmp_path):
+def test_handshake_requires_receipt_and_silent_drop_retries(tmp_path):
     async def scenario():
         worker, events, now = setup_worker(tmp_path)
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=page([message(1)], 1)))) as client:
@@ -45,11 +45,14 @@ def test_handshake_requires_receipt_and_silent_drop_falls_back(tmp_path):
             assert worker.challenge not in json.dumps(worker.status())
             with pytest.raises(ToolError): worker.acknowledge(str(uuid4()))
             now[0] = 61
-            assert not await worker.step(client)
-            assert worker.status()['mode'] == 'polling'
+            assert await worker.step(client)
+            assert worker.status()['state'] == 'retrying'
             assert worker.status()['cursor'] == 0
-            assert len(events) == 1
-            with pytest.raises(ToolError): worker.acknowledge(worker.challenge)
+            assert len(events) == 2
+            worker.acknowledge(worker.challenge)
+            assert worker.status()['channel_verified']
+            assert await worker.step(client)
+            assert events[-1].meta['message_id'] == '1'
         await worker.stop()
     asyncio.run(scenario())
 
@@ -104,8 +107,9 @@ def test_unacknowledged_message_replays_after_restart_and_timeout(tmp_path):
             await worker.step(client)
             current = page([], 1)
             now[0] = 301
-            assert not await worker.step(client)
-            assert worker.status()['mode'] == 'polling' and worker.checkpoint.cursor == 0
+            assert await worker.step(client)
+            assert worker.status()['automatic_recovery'] and worker.checkpoint.cursor == 0
+            assert events[-1].meta['event'] == 'handshake'
         await worker.stop()
         resumed = ClaudeDelivery(worker.room_url, worker.token, worker.handle, 1, worker.notify, directory=tmp_path)
         assert resumed.scan_cursor == 0
@@ -162,7 +166,7 @@ def test_checkpoint_blocks_duplicate_listener_and_rejects_corrupt_state(tmp_path
     resumed.close()
 
 
-def test_broken_channel_transport_falls_back_without_acknowledging(tmp_path):
+def test_broken_channel_transport_retries_without_acknowledging(tmp_path):
     async def scenario():
         worker, events, _ = setup_worker(tmp_path)
         current = page()
@@ -174,7 +178,8 @@ def test_broken_channel_transport_falls_back_without_acknowledging(tmp_path):
             current = page([message(1)], 1)
             with pytest.raises(DeliveryError) as caught: await worker.step(client)
             assert 'private-token' not in str(caught.value)
-            assert worker.status()['mode'] == 'polling'
+            assert worker.status()['state'] == 'retrying'
+            assert not caught.value.terminal
             assert worker.status()['cursor'] == 0
             assert worker.status()['polling_recommended']
         await worker.stop()
@@ -198,4 +203,145 @@ def test_stopped_listener_reports_polling_recovery_after_http_404(tmp_path, monk
         assert status['cursor'] == 17
         assert 'HTTP 404' in status['last_error']
         assert events == []
+    asyncio.run(scenario())
+
+
+def test_recovery_replays_original_receipts_and_accepts_late_acknowledgements(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        current = page()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=current))) as client:
+            await handshake(worker, events, client)
+            current = page([message(1), message(2)], 2)
+            await worker.step(client)
+            receipts = {int(e.meta['message_id']): e.meta['receipt'] for e in events if e.meta['event'] == 'message'}
+            current = page([], 2);now[0] = 301
+            assert await worker.step(client)
+            assert worker.status()['state'] == 'retrying'
+            worker.acknowledge(receipts[2])  # A late receipt still closes its original message.
+            assert worker.checkpoint.cursor == 0
+            worker.acknowledge(events[-1].meta['receipt'])
+            assert worker.status()['state'] == 'listening' and worker.last_error is None
+            await worker.step(client)
+            assert events[-1].meta['message_id'] == '1'
+            assert events[-1].meta['receipt'] == receipts[1]
+            worker.acknowledge(receipts[1])
+            assert worker.checkpoint.cursor == 2 and not worker.pending
+        await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_recovery_probe_backoff_is_bounded_and_does_not_discard_messages(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=page([message(1)], 1)))) as client:
+            for instant, expected in [(0,1),(61,2),(62,2),(76,3),(77,3),(106,4),(107,4),(166,5),(226,6)]:
+                now[0] = instant
+                assert await worker.step(client)
+                assert len(events) == expected
+                assert worker.checkpoint.cursor == 0
+            worker.acknowledge(events[-1].meta['receipt'])
+            await worker.step(client)
+            assert events[-1].meta['message_id'] == '1'
+        await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_transport_recovers_and_replays_after_a_notification_failure(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        current = page()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=current))) as client:
+            await handshake(worker, events, client)
+            original_notify = worker.notify
+            async def broken(_): raise RuntimeError('private transport error')
+            worker.notify = broken; current = page([message(1)], 1)
+            with pytest.raises(DeliveryError): await worker.step(client)
+            receipt = worker.pending[1]['receipt']
+            worker.notify = original_notify; now[0] = 15
+            await worker.step(client)
+            worker.acknowledge(events[-1].meta['receipt'])
+            await worker.step(client)
+            assert events[-1].meta['receipt'] == receipt
+            worker.acknowledge(receipt)
+            assert worker.checkpoint.cursor == 1
+        await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_running_listener_recovers_without_manual_poll_or_rejoin(tmp_path, monkeypatch):
+    async def scenario():
+        events, now, message_count = [], [0.0], [0]
+        complete = asyncio.Event()
+        async def notify(event):
+            events.append(event.params)
+            if event.params.meta['event'] == 'handshake':
+                worker.acknowledge(event.params.meta['receipt'])
+            else:
+                message_count[0] += 1
+                if message_count[0] == 2:
+                    worker.acknowledge(event.params.meta['receipt']);complete.set()
+        worker = ClaudeDelivery('https://example.com/'+str(uuid4()), 'token', 'alice', 0, notify,
+                                directory=tmp_path, clock=lambda: now[0])
+        async def handler(request):
+            await asyncio.sleep(0.01)
+            if message_count[0] == 1: now[0] = 301
+            return httpx.Response(200, json=page([message(1)] if int(request.url.params['after']) < 1 else [], 1))
+        original_client = httpx.AsyncClient
+        monkeypatch.setattr('covenant.claude_delivery.httpx.AsyncClient',
+                            lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+        worker.start()
+        try:
+            await asyncio.wait_for(complete.wait(), 3)
+            assert not worker.task.done()
+            assert worker.checkpoint.cursor == 1 and worker.state == 'listening'
+            messages = [e for e in events if e.meta['event'] == 'message']
+            assert messages[0].meta['receipt'] == messages[1].meta['receipt']
+        finally: await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_full_backlog_replays_in_batches_without_skipping_new_operator_message(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        current = page()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=current))) as client:
+            await handshake(worker, events, client)
+            current = page([message(i) for i in range(1,501)], 500)
+            await worker.step(client)
+            current = page([], 500); now[0] = 301
+            await worker.step(client);worker.acknowledge(events[-1].meta['receipt'])
+            current = page([message(501, 'operator')], 501)
+            count = len(events)
+            await worker.step(client)
+            assert len(events)-count == 10
+            assert worker.scan_cursor == 500 and worker.checkpoint.cursor == 0
+            worker.acknowledge(events[-1].meta['receipt'])
+            count = len(events)
+            await worker.step(client)
+            assert events[count].meta['message_id'] == '501'
+        await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_confirmation_wait_cursor_never_skips_backlog_when_ack_arrives_mid_poll(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        calls = []
+        async def handler(request):
+            after = int(request.url.params['after']);calls.append(after)
+            if len(calls) == 2:
+                worker.acknowledge(worker.challenge)
+            return httpx.Response(200, json=page([message(1)] if after < 1 else [], 1))
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await worker.step(client)
+            assert worker.confirmation_cursor == 1 and worker.scan_cursor == 0
+            await worker.step(client)
+            assert worker.confirmed and worker.scan_cursor == 0 and worker.checkpoint.cursor == 0
+            await worker.step(client)
+            assert calls[:3] == [0, 1, 0]
+            assert events[-1].meta['message_id'] == '1'
+            worker.acknowledge(events[-1].meta['receipt'])
+            assert worker.checkpoint.cursor == 1
+        await worker.stop()
     asyncio.run(scenario())

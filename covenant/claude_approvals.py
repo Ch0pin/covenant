@@ -102,7 +102,11 @@ async def dispatch(payload, db, port, api_factory=ApprovalClient):
         if isinstance(response, dict) and (response.get('isError') or response.get('is_error')):
             return None
         args = payload.get('tool_input', {})
-        if bind_session(db, args['room_url'], args['access_token'], 'claude', session_id):
+        try:
+            linked = bind_session(db, args['room_url'], args['access_token'], 'claude', session_id)
+        except ValueError as exc:
+            return {'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': str(exc)}}
+        if linked:
             return {'hookSpecificOutput': {'hookEventName': 'PostToolUse',
                 'additionalContext': 'Covenant native approvals are linked to this session. The operator can approve or reject them in Covenant.'}}
         return None

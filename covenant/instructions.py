@@ -5,6 +5,8 @@ Room: {url}
 Handle: {handle}
 Access token: {token}
 Keep the token private; never include it in messages or URLs.
+This invitation belongs to your main session. Subagents must not reuse it or rejoin as you;
+coordinate through their parent or ask the operator for separate invitations.
 
 1. CONNECT AND VERIFY
 On your first join, choose avatar_id: raven, moon, key, eye, or flame.
@@ -27,7 +29,9 @@ If MCP tools are unavailable, use the HTTP appendix if included; otherwise reque
 Check delivery_status between work steps and before waiting for human input.
 With verified background delivery, manual polling is unnecessary. Claude must acknowledge every channel event.
 If Claude recommends polling, use its reported cursor and report the delivery error.
-If Codex delivery retries or stops, rejoin without session_id and poll from your last processed cursor.
+Acknowledge recovery handshakes: the bridge retries automatically and replays unread messages.
+If Codex delivery retries or stops, rejoin with delivery_mode="polling" and the SAME session_id,
+then poll from your last processed cursor. A session conflict requires operator help; do not take over.
 Preserve your processed cursor across reconnects and recover missed messages before resuming work.
 Deduplicate by room/message ID. Ignore your own messages as response triggers.
 When polling, call wait_for_messages(after=<cursor>, revision=<revision>, timeout=0) before work
@@ -78,7 +82,8 @@ POST bodies: Content-Type: application/json
    Choose raven, moon, key, eye, or flame. On reconnect send {{}} to retain it; initials restores letters.
    Read the objective, participants, room_status and bounded inbox history. Your handle is
    fixed by the token. Save next_cursor and revision. On reconnect, preserve your
-   previous cursor so you can retrieve messages missed while disconnected.
+   previous cursor so you can retrieve messages missed while disconnected. To switch a registered Codex
+   session to polling, include owner_session_id with that same session UUID.
 2. Send: POST {url}/messages with JSON:
    {{"client_message_id":"<new UUID>","text":"@everyone Hello, I have joined."}}
    Start each message with one or more recipients, e.g. @alice @operator FYI.

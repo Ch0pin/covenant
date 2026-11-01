@@ -57,7 +57,7 @@ def request_json(room_url: str, token: str, suffix: str, body=None):
         details = {401: "Agent access is invalid or revoked. Ask the operator for a fresh invitation.",
                    403: "The server rejected this request.",
                    404: "Conversation or endpoint not found. Check the room URL and whether the server needs upgrading.",
-                   409: "The room is paused/archived, a registration changed, or this message ID was used for different text.",
+                   409: "Room or registration conflict. This invitation may belong to another native session; keep its main session connected and ask the operator to renew the token for reassignment. A reused message ID can also conflict.",
                    422: "Invalid request. Check tool arguments, recipient handles, and allowed limits.",
                    429: "Request limit reached. Wait before retrying."}
         if 300 <= exc.code < 400:
@@ -97,8 +97,8 @@ def create_mcp_server():
         "A handshake receipt confirms channel activation. Until confirmed, keep polling without rejoining. "
         "Check delivery_status at work checkpoints; fallback includes a safe polling cursor. "
         "While delivery is listening, manual polling is unnecessary. "
-        "If Claude reports fallback, call wait_for_messages from its saved cursor. "
-        "If Codex delivery retries or stops, rejoin without session_id and poll from your last processed cursor. "
+        "While Claude retries channel confirmation, poll from its saved cursor; acknowledge recovery handshakes so background delivery can resume. "
+        "If Codex delivery retries or stops, rejoin with delivery_mode=polling and the same session_id, then poll from your last processed cursor. Never rejoin a parent invitation from a subagent. "
         "Inbox delivery includes only messages addressed to you or everyone, excluding your own posts. "
         "Use read_thread(message_id) for one discussion or read_history(scope=all) for wider context; history cursors never replace the live inbox cursor. "
         "Broadcast shared decisions and blockers to @everyone. Before editing shared files, acquire_file_locks "
@@ -129,13 +129,15 @@ def create_mcp_server():
         Omit avatar_id on reconnect to retain your selection. This is cosmetic only.
         Use history_limit=0 to skip catch-up or history_scope="all" for shared history. One connection per MCP
         process; rejoin after a process restart. Preserve a saved cursor on reconnect.
+        Each invitation belongs to one main session; subagents need separate invitations.
         For Codex background delivery, obtain your own ID with printenv CODEX_THREAD_ID
         and pass session_id. Claude Code: always explicitly pass delivery_mode="claude"
         on your first join; omitting it silently selects polling. Channels require
         server:covenant enabled at startup; attempt the channel join and report any
         delivery error before selecting polling fallback. No session UUID is needed. Wait for the
         channel handshake and acknowledge its receipt. Omit both delivery_mode and
-        session_id, or select delivery_mode="polling", for ordinary polling. This bridge and the
+        session_id for ordinary polling. For a Codex fallback, use delivery_mode="polling"
+        with the same session_id to preserve approval ownership. This bridge and the
         addressed Codex session must use the same local/shared Codex server.
         The token is held in this process's memory and is never returned by this tool.
         """
@@ -146,8 +148,8 @@ def create_mcp_server():
         mode = delivery_mode or ("codex" if session_id else "polling")
         if mode == "codex" and session_id is None:
             raise ToolError("Codex delivery requires session_id from CODEX_THREAD_ID.")
-        if mode != "codex" and session_id is not None:
-            raise ToolError("session_id is only used with Codex delivery. Omit it for Claude or polling.")
+        if mode not in {"codex", "polling"} and session_id is not None:
+            raise ToolError("session_id identifies a Codex owner. Omit it for Claude delivery.")
         endpoint = codex_endpoint() if mode == "codex" else None
         registration = {"session_id": str(session_id), "connection_id": str(uuid4())} if mode == "codex" else {}
         # Default joins remain compatible with older servers; optional history needs the upgrade.
@@ -156,6 +158,12 @@ def create_mcp_server():
         if avatar_id is not None:
             registration["avatar_id"] = avatar_id
         async with join_lock:
+            if mode == "polling":
+                owner_id = session_id
+                if owner_id is None and connection == (url, access_token) and isinstance(delivery, CodexDelivery):
+                    owner_id = delivery.session_id
+                if owner_id is not None:
+                    registration["owner_session_id"] = str(owner_id)
             result = await asyncio.to_thread(request_json, url, access_token, "/join", registration)
             if delivery:
                 await delivery.stop()
@@ -207,8 +215,8 @@ def create_mcp_server():
         In fallback mode use cursor as after for wait_for_messages.
         Delivered means Codex accepted input into a turn; an agent reply confirms processing.
         While Claude is awaiting_confirmation, keep polling without rejoining. On
-        Claude fallback, poll from cursor. For Codex failures, rejoin without session_id
-        and poll from your last processed cursor.
+        Claude fallback, poll from cursor. For Codex failures, rejoin with delivery_mode="polling"
+        and the same session_id, then poll from your last processed cursor.
         """
         if delivery:
             return delivery.status()
