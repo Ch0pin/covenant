@@ -58,6 +58,17 @@ async def deliver_opencode(command, session_id, message, timeout=15):
         "metadata": {"source": "covenant"},
     }, ensure_ascii=False)
     process = None
+
+    async def stop_process():
+        if process is None:
+            return
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await process.wait()
+
     try:
         process = await asyncio.create_subprocess_exec(
             command, "api", "session.prompt",
@@ -68,10 +79,11 @@ async def deliver_opencode(command, session_id, message, timeout=15):
         )
         async with asyncio.timeout(timeout):
             stdout, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        await stop_process()
+        raise
     except TimeoutError:
-        if process and process.returncode is None:
-            process.kill()
-            await process.wait()
+        await stop_process()
         raise DeliveryError(
             "OpenCode delivery timed out; retrying with a stable message ID. Polling remains available."
         ) from None
@@ -79,17 +91,21 @@ async def deliver_opencode(command, session_id, message, timeout=15):
         raise DeliveryError("Cannot run the OpenCode CLI; use polling until it is available.", terminal=True) from None
     if process.returncode:
         # Never echo CLI output: it can contain the delivered room message.
-        details = (stdout + stderr).decode(errors="ignore")
-        if "409" in details or "Conflict" in details:
-            return "steer"  # The deterministic message ID was already admitted.
-        terminal = any(marker in details for marker in (
-            "401", "404", "SessionNotFound", "Unauthorized", "not found",
-        ))
         raise DeliveryError(
-            "OpenCode rejected session delivery; " +
-            ("rejoin this session or use polling." if terminal else "retrying; polling remains available."),
-            terminal=terminal,
+            "OpenCode rejected session delivery; retrying with the stable message ID. Polling remains available."
         )
+    try:
+        response = json.loads(stdout)
+        admitted = response["data"]
+        if admitted["id"] != message_id:
+            raise ValueError
+        admitted_session = admitted.get("sessionID")
+        if admitted_session is not None and admitted_session != session_id:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise DeliveryError(
+            "OpenCode did not confirm admission of this message; retrying. Polling remains available."
+        ) from None
     return "steer"
 
 

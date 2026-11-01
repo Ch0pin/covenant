@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from uuid import uuid4
 
 import httpx
@@ -222,12 +223,16 @@ def test_opencode_delivery_wakes_session_with_stable_prompt_id(monkeypatch):
     class Process:
         returncode = 0
 
+        def __init__(self, payload):
+            self.payload = payload
+
         async def communicate(self):
-            return b'{"data":{"id":"msg_test"}}', b""
+            message_id = json.loads(self.payload)["id"]
+            return json.dumps({"data": {"id": message_id, "sessionID": "ses_test123"}}).encode(), b""
 
     async def create(*args, **kwargs):
         calls.append((args, kwargs))
-        return Process()
+        return Process(args[6])
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
 
@@ -246,6 +251,75 @@ def test_opencode_delivery_wakes_session_with_stable_prompt_id(monkeypatch):
     assert repeated["id"] == payload["id"]
     assert payload["text"] == prompt
     assert payload["delivery"] == "steer" and payload["resume"] is True
+
+
+@pytest.mark.parametrize(("stdout", "stderr"), [
+    (b'{"message":"Session not found: ses_409example"}', b"HTTP 404 Not Found"),
+    (b'{"_tag":"ConflictError","message":"Conflict"}', b"HTTP 409 Conflict"),
+])
+def test_opencode_delivery_never_infers_admission_from_failed_cli_output(monkeypatch, stdout, stderr):
+    class Process:
+        returncode = 1
+
+        async def communicate(self):
+            return stdout, stderr
+
+    async def create(*_args, **_kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="rejected session delivery"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_409example", "message"))
+
+
+def test_opencode_delivery_requires_confirmation_of_exact_message(monkeypatch):
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"data":{"id":"msg_some_other_message"}}', b""
+
+    async def create(*_args, **_kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="did not confirm admission"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_test123", "message"))
+
+
+@pytest.mark.parametrize("ending", ["cancel", "timeout"])
+def test_opencode_delivery_stops_subprocess_before_returning(tmp_path, ending):
+    started = tmp_path / "started"
+    completed = tmp_path / "completed"
+    script = tmp_path / "slow-opencode"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, time\n"
+        f"pathlib.Path({str(started)!r}).write_text('started')\n"
+        "time.sleep(0.4)\n"
+        f"pathlib.Path({str(completed)!r}).write_text('completed')\n"
+    )
+    script.chmod(0o700)
+
+    async def scenario():
+        task = asyncio.create_task(deliver_opencode(
+            str(script), "ses_test123", "message", timeout=0.05 if ending == "timeout" else 5))
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert started.exists()
+        if ending == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(DeliveryError, match="timed out"):
+                await task
+        await asyncio.sleep(0.45)
+        assert not completed.exists()
+
+    asyncio.run(scenario())
 
 
 def test_opencode_worker_reports_mode_and_acks_with_it():

@@ -8,11 +8,13 @@ import socket
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from urllib.request import urlopen
 from uuid import uuid4
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.server.mcpserver import Context
 import pytest
 
 from covenant.auth import digest
@@ -258,6 +260,99 @@ def test_new_bridge_preserves_polling_with_a_legacy_http_server(monkeypatch):
         result = result_data(await server.call_tool("wait_for_messages", {"after": 0, "timeout": 0}))
         assert result["messages"] == []
         assert len(calls) == 2
+    asyncio.run(scenario())
+
+
+def test_opencode_sessions_share_mcp_process_without_sharing_connection_state(monkeypatch):
+    from covenant import mcp_server
+
+    deliveries = []
+    requests = []
+    reported = []
+
+    class FakeDelivery:
+        def __init__(self, _url, _token, _handle, registration, _command):
+            self.session_id = registration["session_id"]
+            self.stopped = False
+            deliveries.append(self)
+
+        def start(self):
+            pass
+
+        async def stop(self):
+            self.stopped = True
+
+        def status(self):
+            return {"mode": "opencode", "state": "listening", "session_id": self.session_id,
+                    "cursor": 0, "polling_recommended": False}
+
+    def request(url, token, suffix, body=None):
+        requests.append((url, token, suffix, body))
+        if suffix == "/join":
+            return {"handle": "agent", "messages": [], "next_cursor": 0, "revision": 1,
+                    "capabilities": {"message_receipts": token.startswith("a")},
+                    "delivery": {"mode": "opencode", "session_id": body["session_id"],
+                                 "connection_id": body["connection_id"], "cursor": 0}}
+        if suffix.startswith("/messages?"):
+            return {"messages": [{"id": 1, "receipt_requested": True}],
+                    "next_cursor": 1, "revision": 1}
+        return {"url": url, "token": token}
+
+    async def report(_client, url, path, payload):
+        reported.append((url, path, payload))
+
+    monkeypatch.setattr(mcp_server, "request_json", request)
+    monkeypatch.setattr(mcp_server, "opencode_command", lambda: "/usr/bin/opencode")
+    monkeypatch.setattr(mcp_server, "OpenCodeDelivery", FakeDelivery)
+    monkeypatch.setattr(mcp_server, "report", report)
+
+    async def scenario():
+        server = mcp_server.create_mcp_server()
+
+        def context(session_id):
+            return Context(request_context=SimpleNamespace(
+                meta={"ai.opencode/sessionID": session_id}), mcp_server=server)
+
+        alice_ctx, bob_ctx = context("ses_alice"), context("ses_bob")
+        alice_room = "https://chat.example.com/" + str(uuid4())
+        bob_room = "https://chat.example.com/" + str(uuid4())
+        alice_token, bob_token = "a" * 43, "b" * 43
+        join_args = {"delivery_mode": "opencode"}
+
+        result_data(await server.call_tool("join_room", {
+            **join_args, "room_url": alice_room, "access_token": alice_token}, alice_ctx))
+        alice_delivery = deliveries[-1]
+        result_data(await server.call_tool("join_room", {
+            **join_args, "room_url": bob_room, "access_token": bob_token}, bob_ctx))
+        bob_delivery = deliveries[-1]
+        assert not alice_delivery.stopped and not bob_delivery.stopped
+
+        alice_send = result_data(await server.call_tool("send_message", {
+            "text": "@operator Alice", "client_message_id": "alice-1"}, alice_ctx))
+        bob_send = result_data(await server.call_tool("send_message", {
+            "text": "@operator Bob", "client_message_id": "bob-1"}, bob_ctx))
+        assert alice_send == {"url": alice_room, "token": alice_token}
+        assert bob_send == {"url": bob_room, "token": bob_token}
+        assert result_data(await server.call_tool("delivery_status", {}, alice_ctx))["session_id"] == "ses_alice"
+        assert result_data(await server.call_tool("delivery_status", {}, bob_ctx))["session_id"] == "ses_bob"
+
+        # Receipt capability and reports are also isolated to the invoking session.
+        reported.clear()
+        result_data(await server.call_tool("wait_for_messages", {"after": 0, "timeout": 0}, alice_ctx))
+        result_data(await server.call_tool("wait_for_messages", {"after": 0, "timeout": 0}, bob_ctx))
+        receipts = [item for item in reported if item[1] == "/message-receipts"]
+        assert len(receipts) == 1 and receipts[0][0] == alice_room
+
+        # Rejoining one session replaces only that session's listener.
+        result_data(await server.call_tool("join_room", {
+            **join_args, "room_url": alice_room, "access_token": alice_token}, alice_ctx))
+        assert alice_delivery.stopped and not bob_delivery.stopped
+
+        from mcp.server.mcpserver.exceptions import ToolError
+        with pytest.raises(ToolError, match="Call join_room"):
+            await server.call_tool("send_message", {
+                "text": "@operator Unknown", "client_message_id": "unknown-1"}, context("ses_unknown"))
+
     asyncio.run(scenario())
 
 
