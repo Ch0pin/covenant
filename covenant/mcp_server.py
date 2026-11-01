@@ -1,5 +1,6 @@
 """Session-local stdio MCP adapter for Covenant's authenticated HTTP API."""
 import asyncio
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -19,13 +20,21 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .avatars import AvatarId
-from .delivery import CodexDelivery, codex_endpoint
+from .delivery import CodexDelivery, OpenCodeDelivery, codex_endpoint, opencode_command, OPENCODE_SESSION_RE
 from .claude_delivery import ChannelMCPServer, ClaudeDelivery
 
 
 class NoRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+@dataclass
+class BridgeState:
+    connection: tuple[str, str] | None = None
+    delivery: object | None = None
+    fallback_reason: str | None = None
+    receipts_enabled: bool = False
 
 
 def validate_room_url(value: str) -> str:
@@ -72,17 +81,37 @@ def request_json(room_url: str, token: str, suffix: str, body=None):
 
 
 def create_mcp_server():
-    delivery = None
-    fallback_reason = None
-    receipts_enabled = False
+    default_state = BridgeState()
+    opencode_states: dict[str, BridgeState] = {}
+
+    def caller_session(ctx: Context | None) -> str | None:
+        try:
+            meta = ctx.request_context.meta if ctx is not None else None
+        except ValueError:
+            return None
+        if not meta or "ai.opencode/sessionID" not in meta:
+            return None
+        session_id = meta["ai.opencode/sessionID"]
+        if not isinstance(session_id, str) or not OPENCODE_SESSION_RE.fullmatch(session_id):
+            raise ToolError("OpenCode supplied an invalid session identity.")
+        return session_id
+
+    def state_for(ctx: Context | None, *, create=False) -> BridgeState | None:
+        session_id = caller_session(ctx)
+        if session_id is None:
+            return default_state
+        if create:
+            return opencode_states.setdefault(session_id, BridgeState())
+        return opencode_states.get(session_id)
 
     @asynccontextmanager
     async def lifespan(_server):
         try:
             yield
         finally:
-            if delivery:
-                await delivery.stop()
+            for state in [default_state, *opencode_states.values()]:
+                if state.delivery:
+                    await state.delivery.stop()
 
     server = ChannelMCPServer("covenant", instructions=(
         "Join using the operator's invitation. Choose a preset avatar_id (raven, moon, key, eye, flame) when joining; omit it to keep your current avatar. Retain your existing task instructions. "
@@ -91,7 +120,8 @@ def create_mcp_server():
         "as response triggers. Codex agents can run printenv CODEX_THREAD_ID in their own "
         "shell and pass that value as session_id to join_room to enable background delivery. "
         "Claude Code must explicitly pass delivery_mode=claude on its first join_room call; omitting it silently selects polling. "
-        "Attempt the channel join before selecting polling fallback. Confirm mode=claude, state=listening, and channel_verified=true through delivery_status. "
+        "OpenCode must pass delivery_mode=opencode; its session identity is captured from trusted MCP request metadata. "
+        "Claude should attempt the channel join before selecting polling fallback. Confirm mode=claude, state=listening, and channel_verified=true through delivery_status. "
         "If channel setup fails or delivery reports retrying, fallback, or stopped, report the delivery error to @operator and poll from the saved cursor. "
         "For Covenant channel events, call acknowledge_delivery with the event receipt after reading it. "
         "A handshake receipt confirms channel activation. Until confirmed, keep polling without rejoining. "
@@ -109,15 +139,14 @@ def create_mcp_server():
         "with reply_to=message_id. Linked replies mark Answered: keep progress acknowledgements unlinked. "
         "Respect room pause/archive status. Tokens stay private."),
         log_level="WARNING", lifespan=lifespan)
-    connection = None
     join_lock = asyncio.Lock()
 
     @server.tool(annotations=ToolAnnotations(destructive_hint=False))
     async def join_room(
         room_url: Annotated[str, Field(max_length=2048)],
         access_token: Annotated[str, Field(min_length=32, max_length=256)],
-        session_id: UUID | None = None,
-        delivery_mode: Literal["polling", "codex", "claude"] | None = None,
+        session_id: str | None = None,
+        delivery_mode: Literal["polling", "codex", "claude", "opencode"] | None = None,
         history_limit: Annotated[int, Field(ge=0, le=50)] = 20,
         history_scope: Literal["inbox", "all"] = "inbox",
         avatar_id: AvatarId | None = None,
@@ -139,19 +168,39 @@ def create_mcp_server():
         session_id for ordinary polling. For a Codex fallback, use delivery_mode="polling"
         with the same session_id to preserve approval ownership. This bridge and the
         addressed Codex session must use the same local/shared Codex server.
+        OpenCode must select delivery_mode="opencode" and omit session_id; the bridge obtains
+        the current OpenCode session identity from trusted MCP request metadata.
         The token is held in this process's memory and is never returned by this tool.
         """
-        nonlocal connection, delivery, fallback_reason, receipts_enabled
         url = validate_room_url(room_url)
         if any(char.isspace() for char in access_token):
             raise ToolError("The access token must contain no whitespace.")
+        caller_id = caller_session(ctx)
         mode = delivery_mode or ("codex" if session_id else "polling")
         if mode == "codex" and session_id is None:
             raise ToolError("Codex delivery requires session_id from CODEX_THREAD_ID.")
-        if mode not in {"codex", "polling"} and session_id is not None:
+        if mode == "codex":
+            try:
+                session_id = str(UUID(session_id or ""))
+            except ValueError:
+                raise ToolError("Codex delivery requires the UUID from CODEX_THREAD_ID.") from None
+        if mode == "opencode":
+            if session_id is not None:
+                raise ToolError("OpenCode session identity is detected automatically; omit session_id.")
+            session_id = caller_id
+            if session_id is None:
+                raise ToolError("OpenCode did not provide its session identity. Use polling or upgrade OpenCode.")
+        if mode == "polling" and session_id is not None:
+            try:
+                session_id = str(UUID(session_id))
+            except ValueError:
+                raise ToolError("A polling session_id must be the owning Codex UUID.") from None
+        if mode not in {"codex", "opencode", "polling"} and session_id is not None:
             raise ToolError("session_id identifies a Codex owner. Omit it for Claude delivery.")
-        endpoint = codex_endpoint() if mode == "codex" else None
-        registration = {"session_id": str(session_id), "connection_id": str(uuid4())} if mode == "codex" else {}
+        endpoint = codex_endpoint() if mode == "codex" else opencode_command() if mode == "opencode" else None
+        registration = ({"session_id": str(session_id), "connection_id": str(uuid4()),
+                         **({"delivery_mode": "opencode"} if mode == "opencode" else {})}
+                        if mode in {"codex", "opencode"} else {})
         # Default joins remain compatible with older servers; optional history needs the upgrade.
         if history_limit != 20 or history_scope != "inbox":
             registration.update(history_limit=history_limit, history_scope=history_scope)
@@ -159,57 +208,72 @@ def create_mcp_server():
             registration["avatar_id"] = avatar_id
         async with join_lock:
             if mode == "polling":
-                owner_id = session_id
-                if owner_id is None and connection == (url, access_token) and isinstance(delivery, CodexDelivery):
-                    owner_id = delivery.session_id
+                state = state_for(ctx)
+                owner_id = session_id or caller_id
+                if (owner_id is None and state and state.connection == (url, access_token)
+                        and isinstance(state.delivery, (CodexDelivery, OpenCodeDelivery))):
+                    owner_id = state.delivery.session_id
                 if owner_id is not None:
                     registration["owner_session_id"] = str(owner_id)
             result = await asyncio.to_thread(request_json, url, access_token, "/join", registration)
-            if delivery:
-                await delivery.stop()
-                delivery = None
-            connection = (url, access_token)
-            receipts_enabled = result.get("capabilities", {}).get("message_receipts", False)
-            fallback_reason = None
+            state = state_for(ctx, create=True)
+            assert state is not None
+            if state.delivery:
+                await state.delivery.stop()
+                state.delivery = None
+            state.connection = (url, access_token)
+            state.receipts_enabled = result.get("capabilities", {}).get("message_receipts", False)
+            state.fallback_reason = None
             if mode == "codex":
                 received = result.get("delivery", {})
                 if (received.get("mode") != "codex" or received.get("session_id") != str(session_id)
                         or received.get("connection_id") != registration["connection_id"]):
                     raise ToolError("This server has not enabled background delivery. The room is joined; use polling until its planned upgrade.")
-                delivery = CodexDelivery(url, access_token, result["handle"], received, endpoint)
-                delivery.start()
-                result["delivery"] = delivery.status()
+                state.delivery = CodexDelivery(url, access_token, result["handle"], received, endpoint)
+                state.delivery.start()
+                result["delivery"] = state.delivery.status()
+            elif mode == "opencode":
+                received = result.get("delivery", {})
+                if (received.get("mode") != "opencode" or received.get("session_id") != str(session_id)
+                        or received.get("connection_id") != registration["connection_id"]):
+                    raise ToolError("This Covenant server has not enabled OpenCode delivery. The room is joined; use polling until it is upgraded.")
+                state.delivery = OpenCodeDelivery(url, access_token, result["handle"], received, endpoint)
+                state.delivery.start()
+                result["delivery"] = state.delivery.status()
             elif mode == "claude":
                 if ctx is None or ctx.session.protocol_version >= "2026-07-28":
-                    fallback_reason = "Claude channels need the legacy MCP handshake. Restart Claude with MCP_PROTOCOL_NEGOTIATION=legacy and its Covenant channel enabled; polling remains available."
+                    state.fallback_reason = "Claude channels need the legacy MCP handshake. Restart Claude with MCP_PROTOCOL_NEGOTIATION=legacy and its Covenant channel enabled; polling remains available."
                 else:
                     try:
-                        delivery = ClaudeDelivery(url, access_token, result["handle"], result["next_cursor"],
-                                                  ctx.session.send_notification, receipts_enabled=receipts_enabled)
-                        delivery.start()
+                        state.delivery = ClaudeDelivery(url, access_token, result["handle"], result["next_cursor"],
+                                                        ctx.session.send_notification,
+                                                        receipts_enabled=state.receipts_enabled)
+                        state.delivery.start()
                     except (OSError, ValueError, KeyError):
-                        fallback_reason = "Cannot open Claude delivery checkpoint, or another listener holds this invitation. Use polling and check COVENANT_STATE_DIR."
-                result["delivery"] = delivery.status() if delivery else {
-                    "mode": "polling", "state": "fallback", "last_error": fallback_reason,
+                        state.fallback_reason = "Cannot open Claude delivery checkpoint, or another listener holds this invitation. Use polling and check COVENANT_STATE_DIR."
+                result["delivery"] = state.delivery.status() if state.delivery else {
+                    "mode": "polling", "state": "fallback", "last_error": state.fallback_reason,
                     "polling_recommended": True, "cursor": 0}
-        await report_received(result, "catch_up")
-        if receipts_enabled:
-            status = delivery.status() if delivery else {"mode": "polling", "state": "fallback" if fallback_reason else "joined", "last_error": fallback_reason}
+        await report_received(result, "catch_up", state)
+        if state.receipts_enabled:
+            status = state.delivery.status() if state.delivery else {
+                "mode": "polling", "state": "fallback" if state.fallback_reason else "joined",
+                "last_error": state.fallback_reason}
             async with httpx.AsyncClient(headers={"Authorization": "Bearer " + access_token}, trust_env=False) as client:
                 await report(client, url, "/delivery-status", {"mode": status["mode"], "state": status["state"], "last_error": status.get("last_error")})
         return result
 
-    async def report_received(result, mode):
-        if not receipts_enabled:
+    async def report_received(result, mode, state):
+        if not state.receipts_enabled:
             return
         ids = [m["id"] for m in result.get("messages", []) if m.get("receipt_requested")]
         if ids:
-            url, token = current_connection()
+            url, token = state.connection
             async with httpx.AsyncClient(headers={"Authorization": "Bearer " + token}, trust_env=False) as client:
                 await report(client, url, "/message-receipts", {"message_ids": ids, "stage": "delivered", "mode": mode})
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
-    async def delivery_status() -> dict:
+    async def delivery_status(ctx: Context | None = None) -> dict:
         """Check this bridge's delivery mode, retry errors and last delivered message.
         Claude mode stays unverified until its channel handshake is acknowledged.
         In fallback mode use cursor as after for wait_for_messages.
@@ -218,28 +282,36 @@ def create_mcp_server():
         Claude fallback, poll from cursor. For Codex failures, rejoin with delivery_mode="polling"
         and the same session_id, then poll from your last processed cursor.
         """
-        if delivery:
-            return delivery.status()
-        result = {"mode": "polling", "state": "joined" if connection else "not_joined"}
-        if fallback_reason:
-            result.update(state="fallback", last_error=fallback_reason, polling_recommended=True, cursor=0)
+        state = state_for(ctx)
+        if state and state.delivery:
+            return state.delivery.status()
+        result = {"mode": "polling", "state": "joined" if state and state.connection else "not_joined"}
+        if state and state.fallback_reason:
+            result.update(state="fallback", last_error=state.fallback_reason,
+                          polling_recommended=True, cursor=0)
         return result
 
-    def current_connection():
-        if connection is None:
+    def current_state(ctx: Context | None) -> BridgeState:
+        state = state_for(ctx)
+        if state is None or state.connection is None:
             raise ToolError("Call join_room with your invitation before sending or waiting.")
-        return connection
+        return state
+
+    def current_connection(ctx: Context | None):
+        return current_state(ctx).connection
 
     @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
-    async def acknowledge_delivery(receipt: UUID) -> dict:
+    async def acknowledge_delivery(receipt: UUID, ctx: Context | None = None) -> dict:
         """Confirm receipt of a Claude channel event after reading it. Copy receipt from
         that event's metadata. This confirms reception, not task completion. Send a brief
         @operator reply separately for human requests. Duplicate receipts are safe.
         """
         async with join_lock:
-            if not isinstance(delivery, ClaudeDelivery):
+            state = current_state(ctx)
+            if not isinstance(state.delivery, ClaudeDelivery):
                 raise ToolError("No Claude channel is joined. Use join_room with delivery_mode=claude.")
-            url, token = current_connection()
+            delivery = state.delivery
+            url, token = state.connection
             # An event already in Claude's queue must not bypass revocation or archive.
             page = await asyncio.to_thread(request_json, url, token,
                 "/messages?" + urlencode({"after": delivery.scan_cursor, "timeout": 0, "transport": "claude"}))
@@ -249,7 +321,7 @@ def create_mcp_server():
             # Persist the explicit model receipt before advancing the durable channel cursor.
             mid = next((mid for mid, item in delivery.pending.items()
                         if item["receipt"] == str(receipt) and item.get("receipt_requested", False)), None)
-            if receipts_enabled and mid is not None:
+            if state.receipts_enabled and mid is not None:
                 await asyncio.to_thread(request_json, url, token, "/message-receipts", {
                     "message_ids": [mid], "stage": "acknowledged", "mode": "claude"})
             try:
@@ -263,6 +335,7 @@ def create_mcp_server():
         text: Annotated[str, Field(min_length=1, max_length=16000)],
         client_message_id: Annotated[str, Field(min_length=1, max_length=128)],
         reply_to: Annotated[int | None, Field(ge=1, le=2**63 - 1)] = None,
+        ctx: Context | None = None,
     ) -> dict:
         """Post text beginning with one or more recipients, e.g. @alice @operator FYI.
         Use @handle, @operator, or @everyone. Supply a new unique
@@ -272,19 +345,22 @@ def create_mcp_server():
         request addressed to you, with @operator or @everyone, marks it Answered;
         keep brief progress acknowledgements unlinked. Use read_thread for context.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         body = {"text": text, "client_message_id": client_message_id}
         if reply_to is not None:
             body["reply_to"] = reply_to
         return await asyncio.to_thread(request_json, url, token, "/messages", body)
 
     @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
-    async def acknowledge_message(message_id: Annotated[int, Field(ge=1, le=2**63 - 1)]) -> dict:
+    async def acknowledge_message(
+        message_id: Annotated[int, Field(ge=1, le=2**63 - 1)],
+        ctx: Context | None = None,
+    ) -> dict:
         """Explicitly acknowledge an operator message after reading it, before lengthy
         work. This records reception, not task completion. Answer separately with
         send_message(reply_to=message_id). Claude channel receipts also acknowledge.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         return await asyncio.to_thread(request_json, url, token, "/message-receipts", {
             "message_ids": [message_id], "stage": "acknowledged"})
 
@@ -293,6 +369,7 @@ def create_mcp_server():
         after: Annotated[int, Field(ge=0)],
         revision: Annotated[int | None, Field(ge=0)] = None,
         timeout: Annotated[float, Field(ge=0, le=25)] = 25,
+        ctx: Context | None = None,
     ) -> dict:
         """Wait up to 25 seconds for messages addressed to you/@everyone or status changes.
         Own posts are excluded. Empty filtered pages can advance next_cursor; follow
@@ -302,12 +379,13 @@ def create_mcp_server():
         While paused, stop starting room-driven work and keep polling. Stop on archived.
         This call receives messages; the calling agent decides when to act and reply.
         """
-        url, token = current_connection()
+        state = current_state(ctx)
+        url, token = state.connection
         params = {"after": after, "timeout": timeout}
         if revision is not None:
             params["revision"] = revision
         result = await asyncio.to_thread(request_json, url, token, "/messages?" + urlencode(params))
-        await report_received(result, "polling")
+        await report_received(result, "polling", state)
         return result
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
@@ -315,13 +393,14 @@ def create_mcp_server():
         message_id: Annotated[int, Field(ge=1, le=2**63 - 1)],
         after: Annotated[int, Field(ge=0, le=2**63 - 1)] = 0,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        ctx: Context | None = None,
     ) -> dict:
         """Fetch one discussion's root and replies, including replies addressed to other
         room participants. Any message in that thread can identify it. Replies are in
         chronological order. Use this result's next_cursor as after for more thread
         replies; NEVER replace your live inbox cursor with this separate thread cursor.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         return await asyncio.to_thread(request_json, url, token,
             f"/threads/{message_id}?" + urlencode({"after": after, "limit": limit}))
 
@@ -330,13 +409,14 @@ def create_mcp_server():
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
         scope: Literal["inbox", "all"] = "inbox",
         before: Annotated[int | None, Field(ge=1, le=2**63 - 1)] = None,
+        ctx: Context | None = None,
     ) -> dict:
         """Read bounded history, oldest first within the selected recent page. Choose
         scope="all" explicitly to read conversations between other participants.
         Use next_before to fetch older pages when has_more is true. This is catch-up
         context only: NEVER replace your live inbox cursor with a history position.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         params = {"limit": limit, "scope": scope}
         if before is not None:
             params["before"] = before
@@ -346,6 +426,7 @@ def create_mcp_server():
     async def acquire_file_locks(
         paths: Annotated[list[str], Field(min_length=1, max_length=50)],
         lease_seconds: Annotated[int, Field(ge=30, le=3600)] = 300,
+        ctx: Context | None = None,
     ) -> dict:
         """Reserve all shared files you will edit as one atomic lease. Supply absolute
         paths on this MCP host; symlinks resolve locally. All agents must use the same
@@ -355,7 +436,7 @@ def create_mcp_server():
         Leases are cooperative: ordinary shell/editor writes can bypass them.
         If a response is lost, list_file_locks shows your lease IDs for recovery.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         canonical = []
         for value in paths:
             path = Path(value)
@@ -375,27 +456,28 @@ def create_mcp_server():
     async def renew_file_locks(
         lock_id: UUID,
         lease_seconds: Annotated[int, Field(ge=30, le=3600)] = 300,
+        ctx: Context | None = None,
     ) -> dict:
         """Extend an owned, unexpired lease for all its files. Renew before expires_at.
         On renewed=false or an uncertain renewal, stop edits until ownership is
         established. Expired leases cannot be revived; acquire again and reread files.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         return await asyncio.to_thread(request_json, url, token, "/file-locks/renew",
                                        {"lock_id": str(lock_id), "lease_seconds": lease_seconds})
 
     @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
-    async def release_file_locks(lock_id: UUID) -> dict:
+    async def release_file_locks(lock_id: UUID, ctx: Context | None = None) -> dict:
         """Release your lease after all edits and write-producing commands finish.
         Repeating release is safe; an old ID cannot release a newer lease.
         """
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         return await asyncio.to_thread(request_json, url, token, "/file-locks/release", {"lock_id": str(lock_id)})
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False))
-    async def list_file_locks() -> dict:
+    async def list_file_locks(ctx: Context | None = None) -> dict:
         """List active file reservations in this room, with your lease IDs for recovery."""
-        url, token = current_connection()
+        url, token = current_connection(ctx)
         return await asyncio.to_thread(request_json, url, token, "/file-locks")
 
     return server

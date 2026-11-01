@@ -1,10 +1,13 @@
-"""Background delivery from a room into an explicitly registered local Codex session."""
+"""Background delivery from a room into registered local Codex or OpenCode sessions."""
 import asyncio
 from contextlib import suppress
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
+import shutil
 from uuid import NAMESPACE_URL, uuid5
 from urllib.parse import urlsplit
 
@@ -22,6 +25,88 @@ class DeliveryError(Exception):
     def __init__(self, message, *, terminal=False):
         super().__init__(message)
         self.terminal = terminal
+
+
+OPENCODE_SESSION_RE = re.compile(r"^ses[A-Za-z0-9_-]{1,252}$")
+
+
+def opencode_command():
+    """Resolve the local OpenCode CLI from trusted process configuration."""
+    configured = os.environ.get("COVENANT_OPENCODE_BIN", "opencode")
+    command = shutil.which(configured)
+    if not command:
+        raise ToolError(
+            "Cannot find the OpenCode CLI. Set COVENANT_OPENCODE_BIN in the Covenant MCP configuration or use polling."
+        )
+    return command
+
+
+async def deliver_opencode(command, session_id, message, timeout=15):
+    """Durably steer an active OpenCode session or wake it when idle."""
+    if not isinstance(session_id, str) or not OPENCODE_SESSION_RE.fullmatch(session_id):
+        raise DeliveryError("OpenCode supplied an unsupported session ID; rejoin and use polling.", terminal=True)
+    # OpenCode accepts a caller-provided msg_ ID. Deriving it from the stable
+    # session and prompt makes an uncertain retry idempotent at admission.
+    message_id = "msg_covenant_" + hashlib.sha256(
+        (session_id + "\0" + message).encode()
+    ).hexdigest()[:32]
+    payload = json.dumps({
+        "id": message_id,
+        "text": message,
+        "delivery": "steer",
+        "resume": True,
+        "metadata": {"source": "covenant"},
+    }, ensure_ascii=False)
+    process = None
+
+    async def stop_process():
+        if process is None:
+            return
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await process.wait()
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command, "api", "session.prompt",
+            "--param", "sessionID=" + session_id,
+            "--data", payload,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        async with asyncio.timeout(timeout):
+            stdout, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        await stop_process()
+        raise
+    except TimeoutError:
+        await stop_process()
+        raise DeliveryError(
+            "OpenCode delivery timed out; retrying with a stable message ID. Polling remains available."
+        ) from None
+    except OSError:
+        raise DeliveryError("Cannot run the OpenCode CLI; use polling until it is available.", terminal=True) from None
+    if process.returncode:
+        # Never echo CLI output: it can contain the delivered room message.
+        raise DeliveryError(
+            "OpenCode rejected session delivery; retrying with the stable message ID. Polling remains available."
+        )
+    try:
+        response = json.loads(stdout)
+        admitted = response["data"]
+        if admitted["id"] != message_id:
+            raise ValueError
+        admitted_session = admitted.get("sessionID")
+        if admitted_session is not None and admitted_session != session_id:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise DeliveryError(
+            "OpenCode did not confirm admission of this message; retrying. Polling remains available."
+        ) from None
+    return "steer"
 
 
 def codex_endpoint():
@@ -123,6 +208,7 @@ class CodexDelivery:
         self.sent = set()
         self.ack_cursor = None
         self.receipts_enabled = registration.get("receipts_enabled", False)
+        self.mode = "codex"
 
     def status(self):
         return {"mode": "codex", "state": self.state, "session_id": self.session_id,
@@ -185,7 +271,8 @@ class CodexDelivery:
         if self.ack_cursor is not None:
             # If the HTTP acknowledgement failed, retry it without redelivering the page.
             result = await self.request(client, "POST", "/delivery/ack", json={
-                "connection_id": self.connection_id, "cursor": self.ack_cursor})
+                "connection_id": self.connection_id, "cursor": self.ack_cursor,
+                "mode": self.mode})
             self.cursor = result["cursor"]
             self.ack_cursor = None
             self.sent.clear()
@@ -215,11 +302,11 @@ class CodexDelivery:
             except DeliveryError as exc:
                 if self.receipts_enabled and message.get("receipt_requested", False):
                     await report(client, self.room_url, "/message-receipts", {
-                        "message_ids": [message["id"]], "stage": "error", "mode": "codex", "error": str(exc)[:500]})
+                        "message_ids": [message["id"]], "stage": "error", "mode": self.mode, "error": str(exc)[:500]})
                 raise
             if self.receipts_enabled and message.get("receipt_requested", False):
                 await report(client, self.room_url, "/message-receipts", {
-                    "message_ids": [message["id"]], "stage": "delivered", "mode": "codex"})
+                    "message_ids": [message["id"]], "stage": "delivered", "mode": self.mode})
             self.sent.add(message["id"])
             self.last_delivered_id = message["id"]
         if page["next_cursor"] > self.cursor:
@@ -236,7 +323,7 @@ class CodexDelivery:
                     keep_running = await self.step(client)
                     if self.receipts_enabled:
                         await report(client, self.room_url, "/delivery-status", {
-                            "mode": "codex", "state": self.state, "last_error": None})
+                            "mode": self.mode, "state": self.state, "last_error": None})
                     if not keep_running:
                         return
                     self.last_error = None
@@ -250,7 +337,7 @@ class CodexDelivery:
                     self.state = "stopped" if exc.terminal else "retrying"
                     if self.receipts_enabled:
                         await report(client, self.room_url, "/delivery-status", {
-                            "mode": "codex", "state": self.state, "last_error": self.last_error[:500]})
+                            "mode": self.mode, "state": self.state, "last_error": self.last_error[:500]})
                     if exc.terminal:
                         return
                     await asyncio.sleep(backoff)
@@ -260,3 +347,18 @@ class CodexDelivery:
                     self.state = "stopped"
                     logger.warning(self.last_error)
                     return
+
+
+class OpenCodeDelivery(CodexDelivery):
+    """Background delivery into the OpenCode session that invoked join_room."""
+
+    def __init__(self, room_url, token, handle, registration, command, *, enqueue=deliver_opencode):
+        super().__init__(room_url, token, handle, registration, command, enqueue=enqueue)
+        self.mode = "opencode"
+
+    def status(self):
+        return {"mode": self.mode, "state": self.state, "session_id": self.session_id,
+                "cursor": self.cursor, "last_delivered_id": self.last_delivered_id,
+                "delivery_method": self.delivery_method, "last_error": self.last_error,
+                "polling_recommended": self.state in {"retrying", "stopped"},
+                "meaning": "Delivered means accepted into an OpenCode turn. An agent reply confirms processing."}

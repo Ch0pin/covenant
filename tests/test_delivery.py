@@ -1,11 +1,14 @@
 import asyncio
+from contextlib import suppress
 import json
+import sys
 from uuid import uuid4
 
 import httpx
 import pytest
 
-from covenant.delivery import CodexDelivery, DeliveryError, deliver_codex
+from covenant.delivery import (CodexDelivery, OpenCodeDelivery, DeliveryError,
+                               deliver_codex, deliver_opencode)
 
 
 def listener(enqueue):
@@ -212,3 +215,171 @@ def test_delivery_failure_recommends_polling_and_operator_ack():
     assert "acknowledge_message" in worker.prompt({"id": 1, "sender": "operator", "text": "status?"})
     worker.state = "listening"
     assert not worker.status()["polling_recommended"]
+
+
+def test_opencode_delivery_wakes_session_with_stable_prompt_id(monkeypatch):
+    calls = []
+    prompt = "Covenant chat delivery.\n{\"message_id\":7}"
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def communicate(self):
+            message_id = json.loads(self.payload)["id"]
+            return json.dumps({"data": {"id": message_id, "sessionID": "ses_test123"}}).encode(), b""
+
+    async def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process(args[6])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+
+    async def scenario():
+        assert await deliver_opencode("/usr/bin/opencode", "ses_test123", prompt) == "steer"
+        assert await deliver_opencode("/usr/bin/opencode", "ses_test123", prompt) == "steer"
+
+    asyncio.run(scenario())
+    assert len(calls) == 2
+    first = calls[0][0]
+    assert first[:3] == ("/usr/bin/opencode", "api", "session.prompt")
+    assert first[3:5] == ("--param", "sessionID=ses_test123")
+    payload = json.loads(first[6])
+    repeated = json.loads(calls[1][0][6])
+    assert payload["id"].startswith("msg_covenant_")
+    assert repeated["id"] == payload["id"]
+    assert payload["text"] == prompt
+    assert payload["delivery"] == "steer" and payload["resume"] is True
+
+
+@pytest.mark.parametrize(("stdout", "stderr"), [
+    (b'{"message":"Session not found: ses_409example"}', b"HTTP 404 Not Found"),
+    (b'{"_tag":"ConflictError","message":"Conflict"}', b"HTTP 409 Conflict"),
+])
+def test_opencode_delivery_never_infers_admission_from_failed_cli_output(monkeypatch, stdout, stderr):
+    class Process:
+        returncode = 1
+
+        async def communicate(self):
+            return stdout, stderr
+
+    async def create(*_args, **_kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="rejected session delivery"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_409example", "message"))
+
+
+def test_opencode_delivery_requires_confirmation_of_exact_message(monkeypatch):
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"data":{"id":"msg_some_other_message"}}', b""
+
+    async def create(*_args, **_kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="did not confirm admission"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_test123", "message"))
+
+
+def test_opencode_delivery_cancellation_stops_subprocess_before_returning(tmp_path):
+    started = tmp_path / "started"
+    completed = tmp_path / "completed"
+    script = tmp_path / "slow-opencode"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, time\n"
+        f"pathlib.Path({str(started)!r}).write_text('started')\n"
+        "time.sleep(0.4)\n"
+        f"pathlib.Path({str(completed)!r}).write_text('completed')\n"
+    )
+    script.chmod(0o700)
+
+    async def scenario():
+        task = asyncio.create_task(deliver_opencode(str(script), "ses_test123", "message", timeout=5))
+
+        async def wait_for_start():
+            while not started.exists():
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(wait_for_start(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, DeliveryError):
+                    await task
+        await asyncio.sleep(0.45)
+        assert not completed.exists()
+
+    asyncio.run(scenario())
+
+
+def test_opencode_delivery_timeout_kills_and_awaits_controlled_process(monkeypatch):
+    class Process:
+        returncode = None
+        killed = False
+        waited = False
+
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self):
+            self.waited = True
+            return self.returncode
+
+    process = Process()
+
+    async def create(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="timed out"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_test123", "message", timeout=0.01))
+    assert process.killed and process.waited
+
+
+def test_opencode_worker_reports_mode_and_acks_with_it():
+    async def scenario():
+        calls, acknowledgements = [], []
+
+        async def enqueue(command, session_id, text):
+            calls.append((command, session_id, text))
+            return "steer"
+
+        worker = OpenCodeDelivery(
+            "https://chat.example.com/" + str(uuid4()), "test-private-token", "alice",
+            {"session_id": "ses_test123", "connection_id": str(uuid4()), "cursor": 0},
+            "/usr/bin/opencode", enqueue=enqueue,
+        )
+        page = {"room_status": "active", "revision": 1, "next_cursor": 1,
+                "messages": [{"id": 1, "sender": "operator", "text": "@alice status?"}]}
+
+        def handler(request):
+            if request.url.path.endswith("/ack"):
+                acknowledgements.append(json.loads(request.content))
+                return httpx.Response(200, json={"cursor": 1})
+            return httpx.Response(200, json=page)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            assert await worker.step(client)
+            assert await worker.step(client)
+        assert worker.status()["mode"] == "opencode"
+        assert calls[0][1] == "ses_test123"
+        assert acknowledgements == [{"connection_id": worker.connection_id,
+                                     "cursor": 1, "mode": "opencode"}]
+
+    asyncio.run(scenario())

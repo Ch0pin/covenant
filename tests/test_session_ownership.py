@@ -4,7 +4,8 @@ from uuid import uuid4
 
 import pytest
 from covenant.approvals import create_bridge
-from covenant.automatic_approvals import bind_session
+from covenant.automatic_approvals import ApprovalManager, bind_session
+from covenant.app import create_app
 from covenant.claude_approvals import dispatch, end_session
 from test_app import setup, bearer, register_delivery, delivery_get
 
@@ -81,6 +82,33 @@ def test_claude_owner_survives_session_end_and_hook_rejects_reassignment(setup):
     assert bind_session(app.state.db, url, alice['token'], 'claude', parent)
 
 
+def test_opencode_owner_survives_restart_without_codex_approval_adoption(setup):
+    client, app, settings, csrf, rid, (alice, _) = setup
+    session_id = 'ses_review123'
+    response = client.post(f'/{rid}/join', headers=bearer(alice), json={
+        'session_id': session_id, 'connection_id': str(uuid4()), 'delivery_mode': 'opencode'})
+    assert response.status_code == 200
+
+    def assert_opencode_only(db):
+        with db.connect() as conn:
+            owner = conn.execute('SELECT harness,session_id FROM participant_session_owners WHERE agent_id=?',
+                                 (alice['id'],)).fetchone()
+            delivery = conn.execute('SELECT harness,session_id FROM delivery_bindings WHERE agent_id=?',
+                                    (alice['id'],)).fetchone()
+            assert tuple(owner) == ('opencode', session_id)
+            assert tuple(delivery) == ('opencode', session_id)
+            assert conn.execute('SELECT count(*) FROM approval_sessions WHERE agent_id=?',
+                                (alice['id'],)).fetchone()[0] == 0
+
+    assert_opencode_only(app.state.db)
+    assert ApprovalManager(app, app.state.db, settings).candidates() == []
+
+    restarted = create_app(settings)
+    restarted.state.db.initialize()
+    assert_opencode_only(restarted.state.db)
+    assert ApprovalManager(restarted, restarted.state.db, settings).candidates() == []
+
+
 def test_existing_binding_is_pinned_during_idempotent_upgrade(setup):
     client, app, settings, csrf, rid, (alice, _) = setup
     parent = register_delivery(client, rid, alice)['delivery']
@@ -91,6 +119,28 @@ def test_existing_binding_is_pinned_during_idempotent_upgrade(setup):
         owner = conn.execute('SELECT * FROM participant_session_owners WHERE agent_id=?', (alice['id'],)).fetchone()
         assert owner['session_id'] == parent['session_id']
     assert client.post(f'/{rid}/join', headers=bearer(alice), json={'session_id': str(uuid4()), 'connection_id': str(uuid4())}).status_code == 409
+
+
+def test_legacy_delivery_binding_migrates_to_codex_harness(setup):
+    client, app, settings, csrf, rid, (alice, _) = setup
+    session_id = str(uuid4())
+    with app.state.db.connect() as conn:
+        conn.execute('DROP TABLE delivery_bindings')
+        conn.execute('''CREATE TABLE delivery_bindings (
+            agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+            cursor INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL)''')
+        conn.execute('UPDATE agents SET joined_at=? WHERE id=?', (1, alice['id']))
+        conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?)',
+                     (alice['id'], session_id, str(uuid4()), 0, 1))
+    app.state.db.initialize()
+    with app.state.db.connect() as conn:
+        binding = conn.execute('SELECT harness,session_id FROM delivery_bindings WHERE agent_id=?',
+                               (alice['id'],)).fetchone()
+        owner = conn.execute('SELECT harness,session_id FROM participant_session_owners WHERE agent_id=?',
+                             (alice['id'],)).fetchone()
+    assert tuple(binding) == ('codex', session_id)
+    assert tuple(owner) == ('codex', session_id)
 
 
 def test_simultaneous_first_joins_choose_one_owner_atomically(setup):
