@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import HTTPException, Request, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-Mode = Literal["polling", "codex", "claude", "catch_up"]
+Mode = Literal["polling", "codex", "claude", "opencode", "catch_up"]
 
 
 class ReceiptEvent(BaseModel):

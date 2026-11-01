@@ -63,19 +63,31 @@ class JoinRequest(Input):
     avatar_id: AvatarId | None = None
     history_limit: int = Field(default=20, ge=0, le=50)
     history_scope: Literal["inbox", "all"] = "inbox"
-    session_id: UUID | None = None
+    session_id: str | None = Field(default=None, min_length=3, max_length=256)
     connection_id: UUID | None = None
+    delivery_mode: Literal["codex", "opencode"] | None = None
 
     @model_validator(mode="after")
     def paired_registration(self):
         if (self.session_id is None) != (self.connection_id is None):
-            raise ValueError("Supply both session_id and connection_id for Codex delivery")
+            raise ValueError("Supply both session_id and connection_id for background delivery")
+        mode = self.delivery_mode or ("codex" if self.session_id else None)
+        if self.delivery_mode and self.session_id is None:
+            raise ValueError("Background delivery requires a session_id and connection_id")
+        if mode == "codex":
+            try:
+                UUID(self.session_id or "")
+            except ValueError:
+                raise ValueError("Codex delivery requires a UUID session_id") from None
+        if mode == "opencode" and not re.fullmatch(r"ses[A-Za-z0-9_-]{1,252}", self.session_id or ""):
+            raise ValueError("OpenCode delivery requires its ses... session ID")
         return self
 
 
 class DeliveryAck(Input):
     connection_id: UUID
     cursor: int = Field(ge=0, le=2**63 - 1)
+    mode: Literal["codex", "opencode"] = "codex"
 
 
 class NewMessage(Input):
@@ -514,6 +526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def join(room_id: UUID, request: Request, body: JoinRequest | None = None):
         rid, now = str(room_id), time.time()
         body = body or JoinRequest()
+        delivery_mode = body.delivery_mode or ("codex" if body.session_id else "polling")
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             identity = agent(conn, request, rid)
@@ -545,15 +558,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result["capabilities"] = {"message_receipts": True}
             conn.execute("""INSERT INTO agent_delivery_status VALUES (?,?,?,?,?)
                 ON CONFLICT(agent_id) DO UPDATE SET mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at""",
-                (identity["id"], "codex" if body.session_id else "polling", "joined", None, now))
+                (identity["id"], delivery_mode, "joined", None, now))
             # next_cursor remains the room watermark, independently of history selection.
             # Reconnecting agents must retain their previous processed cursor.
             if body.session_id:
-                from .automatic_approvals import store_binding
-                try:
-                    store_binding(conn, identity, "codex", str(body.session_id))
-                except ValueError as exc:
-                    raise HTTPException(409, str(exc)) from None
+                if delivery_mode == "codex":
+                    from .automatic_approvals import store_binding
+                    try:
+                        store_binding(conn, identity, "codex", str(body.session_id))
+                    except ValueError as exc:
+                        raise HTTPException(409, str(exc)) from None
                 # Keep unqueued messages across reconnects. First registration starts
                 # after the history returned above, which the joining agent already reads.
                 conn.execute("""INSERT INTO delivery_bindings
@@ -563,7 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     (identity["id"], str(body.session_id), str(body.connection_id), result["next_cursor"], now))
                 binding = conn.execute("SELECT cursor FROM delivery_bindings WHERE agent_id=?",
                                        (identity["id"],)).fetchone()
-                result["delivery"] = {"mode": "codex", "session_id": str(body.session_id),
+                result["delivery"] = {"mode": delivery_mode, "session_id": str(body.session_id),
                                       "connection_id": str(body.connection_id), "cursor": binding["cursor"], "receipts_enabled": True}
             else:
                 # An explicit ordinary join switches this participant back to polling.
@@ -609,7 +623,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             delivered = [row[0] for row in conn.execute(
                 "SELECT message_id FROM message_receipts WHERE agent_id=? AND message_id>? AND message_id<=?",
                 (identity["id"], binding["cursor"], cursor))]
-            record_receipt(conn, identity["id"], delivered, "delivered", "codex")
+            record_receipt(conn, identity["id"], delivered, "delivered", body.mode)
             conn.execute("UPDATE delivery_bindings SET cursor=?,updated_at=? WHERE agent_id=?",
                          (cursor, time.time(), identity["id"]))
         return {"cursor": cursor}

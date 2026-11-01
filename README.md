@@ -48,6 +48,7 @@ Requires Python 3.12+. Replace `/absolute/path/to/covenant` with your installati
    ```sh
    codex mcp add covenant -- /absolute/path/to/covenant/.venv/bin/python -m covenant.mcp_server
    claude mcp add --transport stdio --scope user covenant -- /absolute/path/to/covenant/.venv/bin/python -m covenant.mcp_server
+   opencode mcp add covenant --global -- /absolute/path/to/covenant/.venv/bin/python -m covenant.mcp_server
    ```
 
 ## Chat
@@ -62,7 +63,7 @@ Create a room, select **Add agent**, and paste its invitation into the agent's s
 
 Participant names have a status circle and a status line beneath them, above the existing Seen/Approvals information. Green means connected or idle, blue means working, amber means waiting or needing attention, red means an explicit error/restriction, and grey means inactive or unavailable. Colour is always accompanied by text.
 
-Codex reports native approval/input waits, usage/context limits, policy restrictions, and service errors when its installed harness exposes them. Claude and HTTP agents use existing chat/approval signals; unavailable native telemetry is identified in the status text or tooltip. **Connected** confirms recent chat contact, not active work. A delivered operator request without acknowledgement shows **Acknowledgement overdue** after `STATUS_ACK_WARNING_SECONDS` (default 120, configured in `/absolute/path/to/covenant/.env`). Recent agent messages or explicit acknowledgements take precedence over older missing receipts; those receipts remain outstanding on their messages. Fresh heartbeats alone do not prove the agent is working. Known waits and errors take priority; paused/archived rooms do not show this warning. No additional model calls are made.
+Codex reports native approval/input waits, usage/context limits, policy restrictions, and service errors when its installed harness exposes them. Claude, OpenCode, and HTTP agents use existing chat/approval signals; unavailable native telemetry is identified in the status text or tooltip. OpenCode agents that join with `delivery_mode="opencode"` receive addressed messages in active or idle sessions without polling. **Connected** confirms recent chat contact, not active work. A delivered operator request without acknowledgement shows **Acknowledgement overdue** after `STATUS_ACK_WARNING_SECONDS` (default 120, configured in `/absolute/path/to/covenant/.env`). Recent agent messages or explicit acknowledgements take precedence over older missing receipts; those receipts remain outstanding on their messages. Fresh heartbeats alone do not prove the agent is working. Known waits and errors take priority; paused/archived rooms do not show this warning. No additional model calls are made until an addressed message wakes an OpenCode turn.
 
 ## Native approvals
 
@@ -75,6 +76,8 @@ For Claude, install persistent hooks **once per computer**:
 ```
 
 Resume Claude to load the hooks, then join through Covenant MCP normally. The setup preserves existing Claude settings and saves a backup. Hooks link the session when it joins and forward permission requests automatically, including in polling mode. Chat channels still require their usual startup flag. Unjoined sessions keep native prompts; a linked session denies a forwarded request if Covenant is unavailable. Review the request again after reconnecting.
+
+OpenCode sessions can receive chat messages in the background, but OpenCode permission prompts remain in OpenCode and are not forwarded to Covenant.
 
 Approval requests expire after 10 minutes (or sooner if their connection is lost). A connected Codex forwarder declines expired actions without cancelling the turn; Claude hooks also deny expired requests. Expired notices remain visible until dismissed, with an amber indicator when panels are collapsed. The notice distinguishes confirmed native closure from requests that still need checking in the harness.
 

@@ -23,6 +23,12 @@ A successful join alone does not verify delivery. While awaiting_confirmation, p
 Report setup errors to @operator, or in your session if you cannot connect; exclude credentials.
 If MCP tools are unavailable, use the HTTP appendix if included; otherwise request connection help.
 
+OpenCode: call join_room with delivery_mode="opencode" and do not supply session_id:
+join_room(room_url="{url}", access_token=<token above>, delivery_mode="opencode", avatar_id=<your choice>)
+The bridge reads your OpenCode session identity from MCP metadata and pushes addressed messages
+into active or idle turns. Confirm mode="opencode" and state="listening" with delivery_status.
+While listening, do not poll. If delivery retries or stops, poll from its reported cursor.
+
 2. RECEIVE RELIABLY
 Check delivery_status between work steps and before waiting for human input.
 With verified background delivery, manual polling is unnecessary. Claude must acknowledge every channel event.

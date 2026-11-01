@@ -19,7 +19,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .avatars import AvatarId
-from .delivery import CodexDelivery, codex_endpoint
+from .delivery import CodexDelivery, OpenCodeDelivery, codex_endpoint, opencode_command, OPENCODE_SESSION_RE
 from .claude_delivery import ChannelMCPServer, ClaudeDelivery
 
 
@@ -91,7 +91,8 @@ def create_mcp_server():
         "as response triggers. Codex agents can run printenv CODEX_THREAD_ID in their own "
         "shell and pass that value as session_id to join_room to enable background delivery. "
         "Claude Code must explicitly pass delivery_mode=claude on its first join_room call; omitting it silently selects polling. "
-        "Attempt the channel join before selecting polling fallback. Confirm mode=claude, state=listening, and channel_verified=true through delivery_status. "
+        "OpenCode must pass delivery_mode=opencode; its session identity is captured from trusted MCP request metadata. "
+        "Claude should attempt the channel join before selecting polling fallback. Confirm mode=claude, state=listening, and channel_verified=true through delivery_status. "
         "If channel setup fails or delivery reports retrying, fallback, or stopped, report the delivery error to @operator and poll from the saved cursor. "
         "For Covenant channel events, call acknowledge_delivery with the event receipt after reading it. "
         "A handshake receipt confirms channel activation. Until confirmed, keep polling without rejoining. "
@@ -116,8 +117,8 @@ def create_mcp_server():
     async def join_room(
         room_url: Annotated[str, Field(max_length=2048)],
         access_token: Annotated[str, Field(min_length=32, max_length=256)],
-        session_id: UUID | None = None,
-        delivery_mode: Literal["polling", "codex", "claude"] | None = None,
+        session_id: str | None = None,
+        delivery_mode: Literal["polling", "codex", "claude", "opencode"] | None = None,
         history_limit: Annotated[int, Field(ge=0, le=50)] = 20,
         history_scope: Literal["inbox", "all"] = "inbox",
         avatar_id: AvatarId | None = None,
@@ -137,6 +138,8 @@ def create_mcp_server():
         channel handshake and acknowledge its receipt. Omit both delivery_mode and
         session_id, or select delivery_mode="polling", for ordinary polling. This bridge and the
         addressed Codex session must use the same local/shared Codex server.
+        OpenCode must select delivery_mode="opencode" and omit session_id; the bridge obtains
+        the current OpenCode session identity from trusted MCP request metadata.
         The token is held in this process's memory and is never returned by this tool.
         """
         nonlocal connection, delivery, fallback_reason, receipts_enabled
@@ -146,10 +149,24 @@ def create_mcp_server():
         mode = delivery_mode or ("codex" if session_id else "polling")
         if mode == "codex" and session_id is None:
             raise ToolError("Codex delivery requires session_id from CODEX_THREAD_ID.")
-        if mode != "codex" and session_id is not None:
+        if mode == "codex":
+            try:
+                session_id = str(UUID(session_id or ""))
+            except ValueError:
+                raise ToolError("Codex delivery requires the UUID from CODEX_THREAD_ID.") from None
+        if mode == "opencode":
+            if session_id is not None:
+                raise ToolError("OpenCode session identity is detected automatically; omit session_id.")
+            meta = ctx.request_context.meta if ctx is not None else None
+            session_id = meta.get("ai.opencode/sessionID") if meta else None
+            if not isinstance(session_id, str) or not OPENCODE_SESSION_RE.fullmatch(session_id):
+                raise ToolError("OpenCode did not provide its session identity. Use polling or upgrade OpenCode.")
+        if mode not in {"codex", "opencode"} and session_id is not None:
             raise ToolError("session_id is only used with Codex delivery. Omit it for Claude or polling.")
-        endpoint = codex_endpoint() if mode == "codex" else None
-        registration = {"session_id": str(session_id), "connection_id": str(uuid4())} if mode == "codex" else {}
+        endpoint = codex_endpoint() if mode == "codex" else opencode_command() if mode == "opencode" else None
+        registration = ({"session_id": str(session_id), "connection_id": str(uuid4()),
+                         **({"delivery_mode": "opencode"} if mode == "opencode" else {})}
+                        if mode in {"codex", "opencode"} else {})
         # Default joins remain compatible with older servers; optional history needs the upgrade.
         if history_limit != 20 or history_scope != "inbox":
             registration.update(history_limit=history_limit, history_scope=history_scope)
@@ -169,6 +186,14 @@ def create_mcp_server():
                         or received.get("connection_id") != registration["connection_id"]):
                     raise ToolError("This server has not enabled background delivery. The room is joined; use polling until its planned upgrade.")
                 delivery = CodexDelivery(url, access_token, result["handle"], received, endpoint)
+                delivery.start()
+                result["delivery"] = delivery.status()
+            elif mode == "opencode":
+                received = result.get("delivery", {})
+                if (received.get("mode") != "opencode" or received.get("session_id") != str(session_id)
+                        or received.get("connection_id") != registration["connection_id"]):
+                    raise ToolError("This Covenant server has not enabled OpenCode delivery. The room is joined; use polling until it is upgraded.")
+                delivery = OpenCodeDelivery(url, access_token, result["handle"], received, endpoint)
                 delivery.start()
                 result["delivery"] = delivery.status()
             elif mode == "claude":
