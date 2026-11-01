@@ -408,6 +408,31 @@ def test_delivery_registration_filters_targets_and_scopes_cursor(setup):
     assert "session_id" not in json.dumps(client.post(f"/{rid}/join", headers=bearer(bob)).json())
 
 
+def test_opencode_delivery_registration_and_receipt_mode(setup):
+    client, app, _, headers, rid, (alice, _) = setup
+    connection_id = str(uuid4())
+    joined = client.post(f"/{rid}/join", headers=bearer(alice), json={
+        "session_id": "ses_test123", "connection_id": connection_id,
+        "delivery_mode": "opencode",
+    })
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["delivery"]["mode"] == "opencode"
+    message = client.post(f"/api/rooms/{rid}/messages", headers=headers, json={
+        "text": "@alice Wake up", "client_message_id": "opencode-push",
+    }).json()
+    page = delivery_get(client, rid, alice, joined.json()["delivery"]).json()
+    assert page["messages"] == [message]
+    ack = client.post(f"/{rid}/delivery/ack", headers=bearer(alice), json={
+        "connection_id": connection_id, "cursor": page["next_cursor"], "mode": "opencode",
+    })
+    assert ack.status_code == 200
+    with app.state.db.connect() as conn:
+        receipt = conn.execute(
+            "SELECT delivery_mode,delivered_at FROM message_receipts WHERE message_id=?", (message["id"],)
+        ).fetchone()
+    assert receipt["delivery_mode"] == "opencode" and receipt["delivered_at"]
+
+
 def test_delivery_reconnect_preserves_pending_and_replaces_old_connection(setup):
     client, app, settings, _, rid, (alice, bob) = setup
     old = register_delivery(client, rid, alice)["delivery"]
@@ -523,6 +548,7 @@ def test_invitation_formats_and_renewal_keep_identity_and_authentication(setup):
         claude = mcp.split("Claude:", 1)[1].split("2. RECEIVE", 1)[0]
         assert re.search(r'join_room\([^\n]*delivery_mode="claude"[^\n]*avatar_id=<your choice>\)', claude)
         assert 'session_id=<your UUID>, avatar_id=<your choice>' in mcp
+        assert 'delivery_mode="opencode"' in mcp
         assert 'On reconnect, omit avatar_id to preserve your selection.' in mcp
         for avatar in ('raven', 'moon', 'key', 'eye', 'flame'):
             assert avatar in mcp and avatar in http
