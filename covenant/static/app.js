@@ -521,7 +521,9 @@ function renderMessage(message, inThread = false) {
   label.style.color = colors.foreground;
   meta.append(stamp);
   const bubble = element("div", "message-bubble");
-  bubble.append(label);
+  const routing = element("div", "message-routing");
+  routing.append(label);
+  bubble.append(routing);
   const {recipients, body} = CovenantMarkdown.splitRecipients(message.text);
   article.dataset.createdAt = message.created_at;
   article.dataset.hasThread = String(!!message.has_thread);
@@ -529,9 +531,9 @@ function renderMessage(message, inThread = false) {
   if (message.thread_root) article.dataset.threadRoot = message.thread_root;
   article.dataset.groupKey = JSON.stringify([message.sender, [...new Set(recipients)].sort(), message.reply_to || null]);
   if (recipients.length) {
-    const addresses = element("div", "message-recipients");
-    recipients.forEach(handle => addresses.append(element("span", "mention message-recipient", "@" + handle)));
-    bubble.append(addresses);
+    const addresses = element("span", "message-recipients");
+    recipients.forEach((handle, index) => addresses.append(element("span", "mention message-recipient", "@" + handle + (index < recipients.length - 1 ? ", " : ""))));
+    routing.append(element("span", "message-route-arrow", " → "), addresses);
   }
   if (message.reply_to) {
     const parent = element("span", "reply-reference", `Reply to #${message.reply_to}`);
