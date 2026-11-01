@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import json
 import sys
 from uuid import uuid4
@@ -287,8 +288,7 @@ def test_opencode_delivery_requires_confirmation_of_exact_message(monkeypatch):
         asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_test123", "message"))
 
 
-@pytest.mark.parametrize("ending", ["cancel", "timeout"])
-def test_opencode_delivery_stops_subprocess_before_returning(tmp_path, ending):
+def test_opencode_delivery_cancellation_stops_subprocess_before_returning(tmp_path):
     started = tmp_path / "started"
     completed = tmp_path / "completed"
     script = tmp_path / "slow-opencode"
@@ -302,24 +302,54 @@ def test_opencode_delivery_stops_subprocess_before_returning(tmp_path, ending):
     script.chmod(0o700)
 
     async def scenario():
-        task = asyncio.create_task(deliver_opencode(
-            str(script), "ses_test123", "message", timeout=0.05 if ending == "timeout" else 5))
-        for _ in range(100):
-            if started.exists():
-                break
-            await asyncio.sleep(0.01)
-        assert started.exists()
-        if ending == "cancel":
+        task = asyncio.create_task(deliver_opencode(str(script), "ses_test123", "message", timeout=5))
+
+        async def wait_for_start():
+            while not started.exists():
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(wait_for_start(), 5)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-        else:
-            with pytest.raises(DeliveryError, match="timed out"):
-                await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, DeliveryError):
+                    await task
         await asyncio.sleep(0.45)
         assert not completed.exists()
 
     asyncio.run(scenario())
+
+
+def test_opencode_delivery_timeout_kills_and_awaits_controlled_process(monkeypatch):
+    class Process:
+        returncode = None
+        killed = False
+        waited = False
+
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        async def wait(self):
+            self.waited = True
+            return self.returncode
+
+    process = Process()
+
+    async def create(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    with pytest.raises(DeliveryError, match="timed out"):
+        asyncio.run(deliver_opencode("/usr/bin/opencode", "ses_test123", "message", timeout=0.01))
+    assert process.killed and process.waited
 
 
 def test_opencode_worker_reports_mode_and_acks_with_it():

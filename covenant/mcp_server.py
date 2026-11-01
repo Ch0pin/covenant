@@ -208,9 +208,11 @@ def create_mcp_server():
             registration["avatar_id"] = avatar_id
         async with join_lock:
             if mode == "polling":
-                owner_id = session_id
-                if owner_id is None and connection == (url, access_token) and isinstance(delivery, CodexDelivery):
-                    owner_id = delivery.session_id
+                state = state_for(ctx)
+                owner_id = session_id or caller_id
+                if (owner_id is None and state and state.connection == (url, access_token)
+                        and isinstance(state.delivery, (CodexDelivery, OpenCodeDelivery))):
+                    owner_id = state.delivery.session_id
                 if owner_id is not None:
                     registration["owner_session_id"] = str(owner_id)
             result = await asyncio.to_thread(request_json, url, access_token, "/join", registration)

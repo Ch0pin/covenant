@@ -34,8 +34,10 @@ def bind_session(db, room_url, token, harness, session_id):
     return True
 
 
-def store_binding(conn, agent, harness, session_id):
-    """Keep invitation ownership stable; only a new operator-issued token releases it."""
+def store_owner(conn, agent, harness, session_id):
+    """Claim one participant invitation for one native session without enabling approvals."""
+    if harness not in {"codex", "claude", "opencode"}:
+        raise ValueError("Unsupported native session harness")
     ensure_session_owners(conn)
     owner = conn.execute("SELECT * FROM participant_session_owners WHERE agent_id=? AND agent_token_hash=?",
                          (agent['id'], agent['token_hash'])).fetchone()
@@ -53,6 +55,14 @@ def store_binding(conn, agent, harness, session_id):
                  (agent['id'], harness, session_id))
     conn.execute('INSERT INTO participant_session_owners VALUES (?,?,?,?,?)',
                  (agent['id'], harness, session_id, agent['token_hash'], owner['created_at'] if owner else time.time()))
+    return owner
+
+
+def store_binding(conn, agent, harness, session_id):
+    """Keep invitation ownership stable and enable supported native approval forwarding."""
+    if harness not in {"codex", "claude"}:
+        raise ValueError("This harness does not support approval forwarding")
+    owner = store_owner(conn, agent, harness, session_id)
     old = conn.execute('''SELECT agent_id FROM approval_sessions
         WHERE agent_id=? OR (harness=? AND session_id=?)''',
         (agent['id'], harness, session_id)).fetchall()
@@ -100,21 +110,28 @@ class ApprovalManager:
 
     def candidates(self):
         with self.db.connect() as conn:
+            ensure_session_owners(conn)
             # Snapshot the credential generation on first adoption. Rotating a
             # token must require a fresh authenticated join, never reactivate an old session.
             conn.execute("""INSERT OR IGNORE INTO approval_sessions
                 SELECT a.id,'codex',b.session_id,a.token_hash,? FROM delivery_bindings b
                 JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
-                WHERE a.revoked=0 AND a.joined_at IS NOT NULL AND r.status='active'
+                WHERE b.harness='codex' AND a.revoked=0 AND a.joined_at IS NOT NULL AND r.status='active'
                 AND NOT EXISTS (SELECT 1 FROM approval_sessions s WHERE s.agent_id=a.id)""", (time.time(),))
+            # Newly adopted legacy Codex registrations become durable owners. Ambiguous
+            # duplicate bindings intentionally remain ownerless so reconciliation can
+            # report both as disconnected instead of silently choosing one.
+            ensure_session_owners(conn)
             # Existing Codex delivery registrations continue working after upgrade.
             rows = conn.execute('''SELECT a.id AS agent_id,a.handle,a.room_id,a.token_hash,
                 'codex' AS harness,b.session_id FROM delivery_bindings b
                 JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
-                WHERE a.revoked=0 AND a.joined_at IS NOT NULL AND r.status='active' AND NOT EXISTS
+                WHERE b.harness='codex' AND a.revoked=0 AND a.joined_at IS NOT NULL AND r.status='active' AND NOT EXISTS
                 (SELECT 1 FROM approval_sessions s WHERE s.agent_id=a.id)
                 UNION ALL SELECT a.id,a.handle,a.room_id,a.token_hash,s.harness,s.session_id
                 FROM approval_sessions s JOIN agents a ON a.id=s.agent_id JOIN rooms r ON r.id=a.room_id
+                JOIN participant_session_owners o ON o.agent_id=a.id AND o.harness=s.harness
+                    AND o.session_id=s.session_id AND o.agent_token_hash=a.token_hash
                 WHERE a.revoked=0 AND r.status='active' AND s.agent_token_hash=a.token_hash''').fetchall()
         return [dict(row) for row in rows]
 

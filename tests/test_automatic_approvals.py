@@ -47,7 +47,8 @@ async def until(check, timeout=5):
 def test_server_start_and_restart_forward_native_requests(isolated, monkeypatch, kind, decision):
     settings, db, sid, rid, aid, token = isolated
     with db.connect() as conn:
-        conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?)', (aid, sid, str(uuid4()), 0, time.time()))
+        conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?,?)',
+                     (aid, sid, str(uuid4()), 0, time.time(), 'codex'))
     answers, connections = [], []
     async def native(ws):
         connections.append(ws)
@@ -145,7 +146,8 @@ def test_single_supervisor_and_no_duplicate_session_routing(isolated):
         conn.execute('INSERT INTO agents(id,room_id,handle,token_hash,joined_at,created_at) VALUES (?,?,?,?,?,?)',
                      (other, rid, 'other', digest('other'), time.time(), time.time()))
         for identifier in [aid, other]:
-            conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?)', (identifier, sid, str(uuid4()), 0, time.time()))
+            conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?,?)',
+                         (identifier, sid, str(uuid4()), 0, time.time(), 'codex'))
     async def run():
         app = create_app(settings)
         first, second = [ApprovalManager(app, db, settings) for _ in range(2)]
@@ -289,7 +291,8 @@ def test_session_reassignment_does_not_revive_previous_codex_link(isolated):
     with db.connect() as conn:
         conn.execute('INSERT INTO agents(id,room_id,handle,token_hash,joined_at,created_at) VALUES (?,?,?,?,?,?)',
             (other, rid, 'other', digest(other_token), time.time(), time.time()))
-        conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?)', (aid, sid, str(uuid4()), 0, time.time()))
+        conn.execute('INSERT INTO delivery_bindings VALUES (?,?,?,?,?,?)',
+                     (aid, sid, str(uuid4()), 0, time.time(), 'codex'))
     assert bind_session(db, settings.public_base_url + '/' + rid, token, 'codex', sid)
     with pytest.raises(ValueError, match='already linked'):
         bind_session(db, settings.public_base_url + '/' + rid, other_token, 'codex', sid)

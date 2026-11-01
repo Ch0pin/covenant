@@ -12,13 +12,17 @@ SESSION_OWNERS_SCHEMA = """CREATE TABLE IF NOT EXISTS participant_session_owners
 
 def ensure_session_owners(conn):
     # Also used by fresh Claude hook processes before the web server is restarted.
+    delivery_columns = {row[1] for row in conn.execute("PRAGMA table_info(delivery_bindings)")}
+    if delivery_columns and "harness" not in delivery_columns:
+        conn.execute("""ALTER TABLE delivery_bindings ADD COLUMN harness TEXT NOT NULL
+            DEFAULT 'codex' CHECK(harness IN ('codex','opencode'))""")
     conn.execute(SESSION_OWNERS_SCHEMA)
     conn.execute("""INSERT OR IGNORE INTO participant_session_owners
         SELECT s.agent_id,s.harness,s.session_id,s.agent_token_hash,s.updated_at
         FROM approval_sessions s JOIN agents a ON a.id=s.agent_id
         WHERE s.agent_token_hash=a.token_hash""")
     conn.execute("""INSERT OR IGNORE INTO participant_session_owners
-        SELECT b.agent_id,'codex',b.session_id,a.token_hash,b.updated_at
+        SELECT b.agent_id,b.harness,b.session_id,a.token_hash,b.updated_at
         FROM delivery_bindings b JOIN agents a ON a.id=b.agent_id
         WHERE a.joined_at IS NOT NULL AND a.revoked=0
         AND NOT EXISTS (SELECT 1 FROM approval_sessions s WHERE s.agent_id=a.id)
@@ -57,7 +61,8 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS delivery_bindings (
     agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL, connection_id TEXT NOT NULL,
-    cursor INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+    cursor INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL,
+    harness TEXT NOT NULL DEFAULT 'codex' CHECK(harness IN ('codex','opencode'))
 );
 CREATE TABLE IF NOT EXISTS file_locks (
     path TEXT PRIMARY KEY, lock_id TEXT NOT NULL,

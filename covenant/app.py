@@ -552,7 +552,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                  (identity["id"], identity["token_hash"])).fetchone()
             native_session = body.session_id or body.owner_session_id
             native_harness = delivery_mode if body.session_id else (
-                owner["harness"] if owner and owner["session_id"] == body.owner_session_id else "codex")
+                owner["harness"] if owner and owner["session_id"] == body.owner_session_id else
+                "opencode" if body.owner_session_id and body.owner_session_id.startswith("ses") else "codex")
             if native_session:
                 try:
                     if native_harness == "codex":
@@ -599,10 +600,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # Keep unqueued messages across reconnects. First registration starts
                 # after the history returned above, which the joining agent already reads.
                 conn.execute("""INSERT INTO delivery_bindings
-                    (agent_id,session_id,connection_id,cursor,updated_at) VALUES (?,?,?,?,?)
+                    (agent_id,session_id,connection_id,cursor,updated_at,harness) VALUES (?,?,?,?,?,?)
                     ON CONFLICT(agent_id) DO UPDATE SET session_id=excluded.session_id,
-                    connection_id=excluded.connection_id,updated_at=excluded.updated_at""",
-                    (identity["id"], str(body.session_id), str(body.connection_id), result["next_cursor"], now))
+                    connection_id=excluded.connection_id,updated_at=excluded.updated_at,
+                    harness=excluded.harness""",
+                    (identity["id"], str(body.session_id), str(body.connection_id), result["next_cursor"],
+                     now, delivery_mode))
                 binding = conn.execute("SELECT cursor FROM delivery_bindings WHERE agent_id=?",
                                        (identity["id"],)).fetchone()
                 result["delivery"] = {"mode": delivery_mode, "session_id": str(body.session_id),
