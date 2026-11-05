@@ -177,7 +177,13 @@ def test_claude_setup_preserves_settings_is_idempotent_and_has_no_credentials(is
     assert result['permissions'] == original['permissions']
     assert result['hooks']['PermissionRequest'][0] == original['hooks']['PermissionRequest'][0]
     assert token not in path.read_text()
-    assert set(result['hooks']) == {'PostToolUse', 'PermissionRequest', 'SessionEnd'}
+    assert set(result['hooks']) == {'PostToolUse', 'PermissionRequest', 'SessionEnd', 'UserPromptSubmit', 'Stop',
+                                    'StopFailure', 'Notification', 'PreCompact', 'PostCompact'}
+    ours = lambda event: [h for g in result['hooks'][event] for h in g['hooks'] if h.get('statusMessage', '').startswith('Covenant')]
+    # Approval hooks must block for the operator's answer; status hooks must never slow Claude down.
+    assert not any(h.get('async') for e in ('PostToolUse', 'PermissionRequest', 'SessionEnd') for h in ours(e))
+    assert all(h['async'] is True and len(ours(e)) == 1 for e in ('UserPromptSubmit', 'Stop', 'Notification') for h in ours(e))
+    assert [g['matcher'] for g in result['hooks']['Notification']] == ['idle_prompt|elicitation_dialog|elicitation_url_dialog']
     assert install(settings, dest) == (dest, None)
     assert path.stat().st_mode & 0o777 == 0o600
     dest.write_text('{broken')

@@ -21,6 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
 from .avatars import AvatarId
+from .claude_status import busy as claude_busy
 from .db import Database
 from .instructions import connection_instructions, http_connection_instructions
 from .file_locks import register_file_lock_routes, visible_file_locks
@@ -695,7 +696,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def poll(room_id: UUID, request: Request, after: int = Query(0, ge=0),
                    revision: int | None = Query(None, ge=0), timeout: float = Query(25, ge=0, le=25),
                    transport: Literal["polling", "claude"] = "polling"):
-        return await wait_for_changes(str(room_id), request, after, revision, timeout, transport=transport)
+        result = await wait_for_changes(str(room_id), request, after, revision, timeout, transport=transport)
+        if transport == "claude" and isinstance(result, dict):
+            with db.connect() as conn:
+                result = {**result, "harness_busy": claude_busy(conn, agent(conn, request, str(room_id))["id"], time.time())}
+        return result
 
     async def wait_for_changes(rid, request, after, revision, timeout, connection_id=None, transport="polling"):
         with db.connect() as conn:

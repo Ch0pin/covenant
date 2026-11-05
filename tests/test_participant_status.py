@@ -302,3 +302,110 @@ def test_session_end_does_not_mark_a_rotated_invitation(isolated):
     asyncio.run(dispatch({'hook_event_name': 'SessionEnd', 'session_id': sid}, db, settings.port))
     with db.connect() as conn:
         assert not conn.execute("SELECT 1 FROM agent_delivery_status WHERE agent_id=? AND state='ended'", (aid,)).fetchone()
+
+
+def test_claude_status_hooks_show_working_idle_and_failures_without_private_text(isolated):
+    from fastapi.testclient import TestClient
+    from covenant.claude_approvals import dispatch
+    settings, db, sid, rid, aid, token = isolated
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    hook = lambda event, **extra: asyncio.run(dispatch({'hook_event_name': event, 'session_id': sid, **extra}, db, settings.port))
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as client:
+        assert client.post('/api/login', json={'username': 'test', 'password': 'isolated-password-123'}).status_code == 200
+        agent = {'Authorization': 'Bearer ' + token}
+        assert client.post(f'/{rid}/delivery-status', headers=agent, json={'mode': 'claude', 'state': 'listening'}).status_code == 200
+        status = lambda: client.get(f'/api/rooms/{rid}/participant-status').json()['statuses'][aid]
+        assert status()['code'] == 'connected' and not status()['native_available']
+        # Status hooks never print, so nothing is added to Claude's context.
+        assert hook('UserPromptSubmit', prompt='private-prompt', source='system') is None
+        assert status()['code'] == 'working'
+        assert hook('Stop', stop_hook_active=False) is None
+        assert status()['code'] == 'idle'
+        hook('UserPromptSubmit', prompt='x')
+        hook('StopFailure', error='rate_limit', error_details='private-detail', last_assistant_message='private-answer')
+        failed = status()
+        assert failed['code'] == 'rate_limit' and failed['label'] == 'Usage or rate limit reached'
+        hook('StopFailure', error='something_new')
+        assert status()['code'] == 'service_error'
+        with db.connect() as conn:
+            stored = json.dumps([dict(r) for r in conn.execute('SELECT * FROM claude_native_status')])
+        assert 'private' not in stored
+        # A new turn clears the failure; compaction shows while it runs.
+        hook('UserPromptSubmit', prompt='x')
+        hook('PreCompact', trigger='auto')
+        assert status()['code'] == 'compacting'
+        hook('PostCompact', trigger='auto')
+        assert status()['code'] == 'working'
+        hook('Notification', notification_type='elicitation_dialog')
+        assert status()['code'] == 'input'
+        hook('Notification', notification_type='idle_prompt')
+        assert status()['code'] == 'idle'
+        # Old hook state is not trusted once chat contact is stale.
+        with db.connect() as conn:
+            conn.execute('UPDATE agents SET last_seen=0 WHERE id=?', (aid,))
+            conn.execute('UPDATE agent_delivery_status SET updated_at=0 WHERE agent_id=?', (aid,))
+        hook('StopFailure', error='billing_error')
+        assert status()['code'] == 'connection_stale'
+
+
+def test_claude_status_is_never_inherited_by_another_session_or_unjoined_sessions(isolated):
+    from fastapi.testclient import TestClient
+    from covenant.claude_approvals import dispatch
+    settings, db, sid, rid, aid, token = isolated
+    other = str(uuid4())
+    # A session that never joined Covenant leaves no trace.
+    asyncio.run(dispatch({'hook_event_name': 'UserPromptSubmit', 'session_id': other, 'prompt': 'x'}, db, settings.port))
+    with db.connect() as conn:
+        assert not conn.execute('SELECT 1 FROM claude_native_status').fetchone()
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    asyncio.run(dispatch({'hook_event_name': 'StopFailure', 'session_id': sid, 'error': 'rate_limit'}, db, settings.port))
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as client:
+        assert client.post('/api/login', json={'username': 'test', 'password': 'isolated-password-123'}).status_code == 200
+        agent = {'Authorization': 'Bearer ' + token}
+        assert client.post(f'/{rid}/delivery-status', headers=agent, json={'mode': 'claude', 'state': 'listening'}).status_code == 200
+        status = lambda: client.get(f'/api/rooms/{rid}/participant-status').json()['statuses'][aid]
+        assert status()['code'] == 'rate_limit'
+        # The same invitation joined from a new Claude session starts without the old failure.
+        with db.connect() as conn:
+            conn.execute('UPDATE approval_sessions SET session_id=? WHERE agent_id=?', (other, aid))
+        assert status()['code'] == 'connected'
+        asyncio.run(dispatch({'hook_event_name': 'Stop', 'session_id': other}, db, settings.port))
+        assert status()['code'] == 'idle'
+        # Ending the session removes its status.
+        asyncio.run(dispatch({'hook_event_name': 'SessionEnd', 'session_id': other}, db, settings.port))
+        with db.connect() as conn:
+            assert not conn.execute('SELECT 1 FROM claude_native_status').fetchone()
+
+
+def test_claude_polls_report_busy_only_for_the_linked_session_mid_turn(isolated):
+    from fastapi.testclient import TestClient
+    from covenant import claude_status
+    from covenant.claude_approvals import dispatch
+    settings, db, sid, rid, aid, token = isolated
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    hook = lambda event: asyncio.run(dispatch({'hook_event_name': event, 'session_id': sid}, db, settings.port))
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as client:
+        agent = {'Authorization': 'Bearer ' + token}
+        busy = lambda: client.get(f'/{rid}/messages', headers=agent, params={'timeout': 0, 'transport': 'claude'}).json()['harness_busy']
+        assert busy() is False
+        hook('UserPromptSubmit')
+        assert busy() is True
+        # Ordinary polling clients get the same response as before.
+        assert 'harness_busy' not in client.get(f'/{rid}/messages', headers=agent, params={'timeout': 0}).json()
+        hook('Stop')
+        assert busy() is False
+        hook('UserPromptSubmit')
+        with db.connect() as conn:
+            conn.execute('UPDATE claude_native_status SET phase_since=? WHERE agent_id=?',
+                         (time.time() - claude_status.BUSY_MAX_AGE - 1, aid))
+        assert busy() is False  # A missed Stop never holds handshakes back for long.
+        with db.connect() as conn:
+            conn.execute('UPDATE claude_native_status SET phase_since=? WHERE agent_id=?', (time.time(), aid))
+            conn.execute("UPDATE agents SET token_hash='rotated' WHERE id=?", (aid,))
+        assert client.get(f'/{rid}/messages', headers=agent, params={'timeout': 0, 'transport': 'claude'}).status_code == 401

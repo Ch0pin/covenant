@@ -4,6 +4,9 @@ from uuid import UUID
 
 from fastapi import Request
 
+from . import claude_status
+from .db import CLAUDE_STATUS_SCHEMA
+
 NATIVE_MAX_AGE = 90
 DELIVERY_MAX_AGE = 120
 ERRORS = {
@@ -262,11 +265,21 @@ def register_participant_status_routes(app, db, operator, room):
                 ORDER BY CASE WHEN r.delivered_at IS NULL THEN 1 ELSE 0 END, r.delivered_at,r.queued_at""", (rid,)):
                 receipts.setdefault(row["agent_id"], []).append(dict(row))
             # A rotated or reassigned invitation must never inherit another session's telemetry.
-            bindings = {r["agent_id"]: dict(r) for r in conn.execute("""SELECT s.agent_id,s.session_id,s.agent_token_hash
+            bindings = {r["agent_id"]: dict(r) for r in conn.execute("""SELECT s.agent_id,s.session_id,s.agent_token_hash,s.harness
                 FROM approval_sessions s JOIN agents a ON a.id=s.agent_id WHERE a.room_id=? AND s.agent_token_hash=a.token_hash""", (rid,))}
+            conn.execute(CLAUDE_STATUS_SCHEMA)
+            claude = {r["agent_id"]: r for r in conn.execute("""SELECT c.* FROM claude_native_status c
+                JOIN agents a ON a.id=c.agent_id WHERE a.room_id=?""", (rid,))}
         output = {}
         for a in agents:
-            native = manager.participant_status(a["id"], bindings.get(a["id"]), now) if manager and hasattr(manager, "participant_status") else None
+            binding = bindings.get(a["id"])
+            if binding and binding["harness"] == "claude":
+                # Claude reports only on change, so its state counts only while chat contact is fresh.
+                delivery = deliveries.get(a["id"])
+                seen = max(a["last_seen"] or 0, delivery["updated_at"] if delivery else 0)
+                native = claude_status.view(claude.get(a["id"]), binding, now - seen <= DELIVERY_MAX_AGE)
+            else:
+                native = manager.participant_status(a["id"], binding, now) if manager and hasattr(manager, "participant_status") else None
             recent_activity = activity.get(a["id"])
             outstanding = receipts.get(a["id"], [])
             # Old missing receipts describe old requests, not today's agent activity.

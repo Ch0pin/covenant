@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+from . import claude_status
 from .db import Database
 
 
@@ -43,6 +44,11 @@ def bind_session(*args, **kwargs):
     return bind_session(*args, **kwargs)
 
 
+APPROVAL_MARKER = 'Covenant approval forwarding'
+STATUS_MARKER = 'Covenant status reporting'
+MARKERS = {APPROVAL_MARKER, STATUS_MARKER}
+
+
 def install(settings, destination=None):
     destination = destination or Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude')) / 'settings.json'
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -55,8 +61,13 @@ def install(settings, destination=None):
         if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
             raise ValueError('Claude settings must contain a JSON object with an object-valued hooks field')
         hooks = config.setdefault('hooks', {})
-        for event, matcher, timeout in [('PostToolUse', 'mcp__covenant__join_room', 10),
-                                         ('PermissionRequest', '*', 600), ('SessionEnd', '*', 10)]:
+        entries = [('PostToolUse', 'mcp__covenant__join_room', 10, APPROVAL_MARKER, False),
+                   ('PermissionRequest', '*', 600, APPROVAL_MARKER, False), ('SessionEnd', '*', 10, APPROVAL_MARKER, False)]
+        # Status hooks run in the background, so they never slow down or change a Claude turn.
+        entries += [(event, claude_status.NOTIFICATION_MATCHER if event == 'Notification' else '*', 10, STATUS_MARKER, True)
+                    for event in claude_status.STATUS_EVENTS]
+        # Remove our old entries first, so a re-run never leaves stale or duplicate hooks.
+        for event in dict.fromkeys(e[0] for e in entries):
             groups = hooks.setdefault(event, [])
             if not isinstance(groups, list):
                 raise ValueError('Claude hook entries must be arrays; existing settings were preserved')
@@ -68,14 +79,17 @@ def install(settings, destination=None):
                 original = group.get('hooks', [])
                 if any(not isinstance(h, dict) for h in original):
                     raise ValueError('Invalid Claude hook entry; existing settings were preserved')
-                remaining = [h for h in original if h.get('statusMessage') != 'Covenant approval forwarding']
+                remaining = [h for h in original if h.get('statusMessage') not in MARKERS]
                 if remaining == original:
                     retained.append(group)
                 elif remaining:
                     retained.append({**group, 'hooks': remaining})
             groups[:] = retained
-            groups.append({'matcher': matcher, 'hooks': [{'type': 'command', 'command': command,
-                'timeout': timeout, 'statusMessage': 'Covenant approval forwarding'}]})
+        for event, matcher, timeout, marker, background in entries:
+            hook = {'type': 'command', 'command': command, 'timeout': timeout, 'statusMessage': marker}
+            if background:
+                hook['async'] = True
+            hooks.setdefault(event, []).append({'matcher': matcher, 'hooks': [hook]})
         output = json.dumps(config, indent=2) + '\n'
         if before is not None and json.loads(before) == config:
             return destination, None
@@ -108,6 +122,8 @@ def end_session(db, session_id):
             conn.execute('''INSERT INTO agent_delivery_status VALUES (?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
                 mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at''',
                 (agent_id, 'claude', 'ended', None, time.time()))
+        conn.execute(claude_status.CLAUDE_STATUS_SCHEMA)
+        conn.execute('DELETE FROM claude_native_status WHERE session_id=?', (session_id,))
         conn.execute('DELETE FROM approval_sessions WHERE harness=\'claude\' AND session_id=?', (session_id,))
         conn.execute('UPDATE approval_bridges SET expires_at=0 WHERE harness=\'claude\' AND session_id=?', (session_id,))
         conn.execute('''UPDATE approval_requests SET status='cancelled' WHERE bridge_id IN
@@ -122,6 +138,16 @@ def session_binding(db, session_id):
             FROM approval_sessions s JOIN agents a ON a.id=s.agent_id JOIN rooms r ON r.id=a.room_id
             WHERE s.harness='claude' AND s.session_id=?''', (session_id,)).fetchone()
         return dict(row) if row else None
+
+
+def record_status(db, session_id, event, payload):
+    with db.connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        binding = conn.execute('''SELECT s.agent_id,s.session_id,s.agent_token_hash FROM approval_sessions s
+            JOIN agents a ON a.id=s.agent_id WHERE s.harness='claude' AND s.session_id=?
+            AND a.revoked=0 AND a.token_hash=s.agent_token_hash''', (session_id,)).fetchone()
+        if binding:  # Sessions that never joined Covenant leave no trace.
+            claude_status.record(conn, binding, event, payload, time.time())
 
 
 async def dispatch(payload, db, port, api_factory=None, progress=None):
@@ -146,6 +172,9 @@ async def dispatch(payload, db, port, api_factory=None, progress=None):
     if event == 'SessionEnd':
         end_session(db, session_id)
         return None
+    if event in claude_status.STATUS_EVENTS:
+        record_status(db, session_id, event, payload)
+        return None  # Status hooks never print, so nothing is added to Claude's context.
     if event != 'PermissionRequest':
         return None
     binding = session_binding(db, session_id)
@@ -201,7 +230,7 @@ def main():
             # Not known to be linked: an outage must not deny prompts in sessions that never joined Covenant.
             # Returning nothing leaves Claude's own prompt in place, so nothing is approved silently.
             print('Covenant approval hook unavailable; using the normal Claude prompt.', file=sys.stderr)
-        else:
+        elif payload.get('hook_event_name') not in claude_status.STATUS_EVENTS:
             print('Covenant approval registration unavailable; check setup and rejoin.', file=sys.stderr)
     if result is not None:
         print(json.dumps(result))

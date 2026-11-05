@@ -4,6 +4,7 @@ from contextlib import suppress
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -105,6 +106,8 @@ class ClaudeDelivery:
         self.recovery_interval, self.recovery_max_interval = recovery_interval, recovery_max_interval
         self.probe_delay = recovery_interval
         self.last_emitted_id, self.last_acknowledged_id = None, None
+        # When Claude was last seen mid-turn. Its hooks report this; without them it never changes.
+        self.last_busy_at = -math.inf
 
     def status(self):
         return {"mode": "polling" if self.state in {"fallback", "stopped"} else "claude",
@@ -170,6 +173,17 @@ class ClaudeDelivery:
             self.next_probe_at = self.clock()
         self.state, self.last_error = "retrying", reason
 
+    def note_busy(self, busy):
+        """Hold repeat handshakes while Claude is mid-turn: each one would queue as an extra prompt.
+
+        The first handshake is never held, and timeouts count only from the end of the turn.
+        """
+        if not busy:
+            return
+        now = self.last_busy_at = self.clock()
+        if self.next_probe_at is not None:
+            self.next_probe_at = max(self.next_probe_at, now + (self.probe_delay if self.recovering else self.handshake_timeout))
+
     async def probe(self):
         now = self.clock()
         if self.next_probe_at is not None and now < self.next_probe_at:
@@ -220,6 +234,7 @@ class ClaudeDelivery:
             timeout = 0 if self.next_probe_at is None else max(0, min(5, self.next_probe_at - self.clock()))
         page = await self.poll(client, timeout, after=self.confirmation_cursor if confirming else None)
         self.revision = page["revision"]
+        self.note_busy(page.get("harness_busy", False))
         if confirming:
             # This cursor only waits for room changes while confirming. It never acknowledges
             # messages or replaces the actual delivery cursor, even if an ACK arrives mid-poll.
@@ -234,13 +249,13 @@ class ClaudeDelivery:
         if confirming and self.confirmed:
             return True
         if not self.confirmed:
-            if not self.recovering and self.probe_at is not None and self.clock() - self.probe_at >= self.handshake_timeout:
+            if not self.recovering and self.probe_at is not None and self.clock() - max(self.probe_at, self.last_busy_at) >= self.handshake_timeout:
                 self.recover("Claude channel handshake was not acknowledged. Retrying automatically; polling remains available.")
             self.state = "retrying" if self.recovering else "awaiting_confirmation"
             await self.probe()
             await asyncio.sleep(0.2)
             return True
-        if any(self.clock() - item["sent_at"] >= self.receipt_timeout for item in self.pending.values()):
+        if any(self.clock() - max(item["sent_at"], self.last_busy_at) >= self.receipt_timeout for item in self.pending.values()):
             self.recover("Claude has not acknowledged channel messages. Retrying confirmation automatically; unread messages remain queued.")
             await self.probe()
             return True

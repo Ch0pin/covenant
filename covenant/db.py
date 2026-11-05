@@ -10,6 +10,15 @@ SESSION_OWNERS_SCHEMA = """CREATE TABLE IF NOT EXISTS participant_session_owners
 )"""
 
 
+# Written by Claude hook processes, which may run before the web server restarts with this schema.
+CLAUDE_STATUS_SCHEMA = """CREATE TABLE IF NOT EXISTS claude_native_status (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL, agent_token_hash TEXT NOT NULL,
+    phase TEXT NOT NULL, phase_since REAL NOT NULL,
+    reason TEXT, reason_since REAL, updated_at REAL NOT NULL
+)"""
+
+
 def ensure_session_owners(conn):
     # Also used by fresh Claude hook processes before the web server is restarted.
     delivery_columns = {row[1] for row in conn.execute("PRAGMA table_info(delivery_bindings)")}
@@ -154,6 +163,7 @@ class Database:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            conn.execute(CLAUDE_STATUS_SCHEMA)
             ensure_session_owners(conn)
         self.path.chmod(0o600)
 

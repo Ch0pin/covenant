@@ -345,3 +345,55 @@ def test_confirmation_wait_cursor_never_skips_backlog_when_ack_arrives_mid_poll(
             assert worker.checkpoint.cursor == 1
         await worker.stop()
     asyncio.run(scenario())
+
+
+def test_repeat_handshakes_wait_while_claude_is_mid_turn(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        current = {'busy': True}
+        respond = lambda _: httpx.Response(200, json={**page([message(1)], 1), 'harness_busy': current['busy']})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            # The first handshake is always sent, even mid-turn.
+            assert await worker.step(client)
+            assert len(events) == 1
+            for instant in (61, 120, 300):
+                now[0] = instant
+                assert await worker.step(client)
+                assert len(events) == 1 and worker.status()['state'] == 'awaiting_confirmation'
+            current['busy'] = False
+            now[0] = 359
+            assert await worker.step(client)
+            assert len(events) == 1
+            # A full handshake timeout after the turn ended, recovery resumes as before.
+            now[0] = 360
+            assert await worker.step(client)
+            assert len(events) == 2 and worker.status()['state'] == 'retrying'
+            worker.acknowledge(events[-1].meta['receipt'])
+            await worker.step(client)
+            assert events[-1].meta['message_id'] == '1'
+        await worker.stop()
+    asyncio.run(scenario())
+
+
+def test_unacknowledged_messages_wait_for_the_turn_to_end_before_recovery(tmp_path):
+    async def scenario():
+        worker, events, now = setup_worker(tmp_path)
+        current = {'page': page(), 'busy': False}
+        respond = lambda _: httpx.Response(200, json={**current['page'], 'harness_busy': current['busy']})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await handshake(worker, events, client)
+            current['page'] = page([message(1)], 1)
+            await worker.step(client)
+            current.update(page=page([], 1), busy=True)
+            now[0] = 400
+            assert await worker.step(client)
+            assert worker.status()['state'] == 'listening'
+            current['busy'] = False
+            now[0] = 699
+            assert await worker.step(client)
+            assert worker.status()['state'] == 'listening'
+            now[0] = 700
+            assert await worker.step(client)
+            assert worker.status()['state'] == 'retrying'
+        await worker.stop()
+    asyncio.run(scenario())
