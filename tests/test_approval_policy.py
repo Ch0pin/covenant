@@ -108,3 +108,16 @@ def test_manual_rejection_and_auto_approval_cannot_overwrite_each_other(approval
     assert row['decision'] == ('reject' if manual_status == 200 else 'approve')
     assert bool(row['auto_approved']) == (manual_status == 409)
     assert client.post(f'/approval-bridge/requests/{aid}/take', headers=auth).json()['decision'] == row['decision']
+
+
+@pytest.mark.parametrize("kind, tool", [("question", "AskUserQuestion"), ("plan", "ExitPlanMode")])
+def test_auto_approve_never_answers_claude_questions_or_plans(approvals, kind, tool):
+    client, app, csrf, rid, invitations, bid, auth, payload = approvals
+    prompt = {**payload, "kind": kind, "details": {"tool_name": tool, "tool_input": {}}}
+    aid = submit(approvals, prompt)
+    assert policy(approvals).json() == {'auto_approve': True, 'approved_count': 0}
+    later = submit(approvals, {**prompt, "request_key": "later"})
+    ordinary = submit(approvals, {**payload, "request_key": "ordinary"})
+    for request_id in (aid, later):
+        assert client.post(f'/approval-bridge/requests/{request_id}/take', headers=auth).json() == {'status': 'pending'}
+    assert client.post(f'/approval-bridge/requests/{ordinary}/take', headers=auth).json()['decision'] == 'approve'

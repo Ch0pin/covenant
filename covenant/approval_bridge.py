@@ -29,10 +29,15 @@ class ApprovalClient:
         return (await self.request("", payload))["id"]
 
     async def wait(self, aid):
+        result = await self.wait_result(aid)
+        return result and result["decision"]
+
+    async def wait_result(self, aid):
+        """The decided result, including any answers or feedback; None when it ended undecided."""
         while True:
             result = await self.request(f"/{aid}/take")
             if result["status"] == "decided":
-                return result["decision"]
+                return result
             if result["status"] != "pending":
                 return None
             await asyncio.sleep(1)
@@ -265,11 +270,33 @@ class CodexApprovals:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def claude_decision(allowed, message="Operator rejected the request in Covenant"):
+def claude_decision(allowed, message="Operator rejected the request in Covenant", updated_input=None):
     decision = {"behavior": "allow" if allowed else "deny"}
     if not allowed:
         decision["message"] = message
+    elif updated_input is not None:
+        decision["updatedInput"] = updated_input
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+
+
+# Claude tools whose permission prompt is itself the user's answer surface.
+CLAUDE_INTERACTIVE = {"AskUserQuestion": "question", "ExitPlanMode": "plan"}
+
+
+def claude_prompt_result(kind, tool_input, result):
+    approved = result["decision"] == "approve"
+    feedback = result.get("message")
+    if kind == "question":
+        answers = result.get("answers")
+        if approved and isinstance(answers, dict) and answers:
+            return claude_decision(True, updated_input={**tool_input, "answers": answers})
+        return claude_decision(False, "The operator declined to answer in Covenant" + (f": {feedback}" if feedback else ""))
+    if kind == "plan":
+        if approved:
+            return claude_decision(True)
+        return claude_decision(False, "The operator rejected the plan in Covenant" + (f". Feedback: {feedback}" if feedback else "")
+                               + ". Stay in plan mode and revise the plan.")
+    return claude_decision(approved)
 
 
 async def claude_hook(payload, api):
@@ -277,13 +304,20 @@ async def claude_hook(payload, api):
         return None
     aid = None
     try:
-        aid = await api.submit({"request_key": str(uuid4()), "session_id": payload["session_id"],
-                                "kind": "tool", "details": {k: payload[k] for k in ("tool_name", "tool_input", "cwd") if k in payload}})
+        kind = CLAUDE_INTERACTIVE.get(payload.get("tool_name"), "tool")
+        tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+        request = {"request_key": str(uuid4()), "session_id": payload["session_id"],
+                   "kind": kind, "details": {k: payload[k] for k in ("tool_name", "tool_input", "cwd") if k in payload}}
+        if kind == "question":
+            questions = tool_input.get("questions")
+            request["can_approve"] = isinstance(questions, list) and bool(questions) and all(
+                isinstance(q, dict) and isinstance(q.get("question"), str) and q["question"] for q in questions)
+        aid = await api.submit(request)
         async with asyncio.timeout(590):
-            decision = await api.wait(aid)
-        if decision is None:
+            result = await api.wait_result(aid)
+        if result is None:
             return claude_decision(False, "Covenant request expired or access ended; ask the operator again")
-        return claude_decision(decision == "approve")
+        return claude_prompt_result(kind, tool_input, result)
     except (httpx.HTTPError, TimeoutError, KeyError, ValueError):
         return claude_decision(False, "Covenant approvals unavailable; ask the operator again")
     finally:

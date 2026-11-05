@@ -116,6 +116,13 @@ dialog{background:var(--panel);border-color:var(--line)}
 .approval-details pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:38dvh;overflow:auto;background:var(--code-bg);padding:12px;border-radius:8px;font-size:12px}
 .approval-details small {overflow-wrap:anywhere}
 .approval-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.approval-question {border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;min-width:0}
+.approval-question legend {font-weight:600;padding:0 4px;overflow-wrap:anywhere}
+.approval-option {display:grid;grid-template-columns:auto 1fr;column-gap:8px;align-items:start;padding:6px 0;cursor:pointer}
+.approval-option input {margin-top:3px}
+.approval-option small {grid-column:2}
+.approval-other,.approval-feedback {width:100%;box-sizing:border-box;margin-top:6px;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:inherit}
+.approval-plan {white-space:pre-wrap;overflow-wrap:anywhere}
 
 .approvals-section {margin-top:24px;min-width:0}
 .approvals-section h2 {font-size:14px}

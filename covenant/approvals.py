@@ -21,7 +21,8 @@ class ApprovalInput(BaseModel):
 class NativeRequest(ApprovalInput):
     request_key: str = Field(min_length=1, max_length=200)
     session_id: str = Field(min_length=1, max_length=200)
-    kind: Literal["command", "file", "tool"]
+    # question/plan are Claude prompts the operator answers; never auto-approved.
+    kind: Literal["command", "file", "tool", "question", "plan"]
     details: dict
     can_approve: bool = True
 
@@ -32,8 +33,32 @@ class NativeRequest(ApprovalInput):
         return self
 
 
+INTERACTIVE_KINDS = ("question", "plan")
+
+
 class Decision(ApprovalInput):
     decision: Literal["approve", "reject"]
+    answers: dict[str, str] | None = None
+    message: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def bounded_response(self):
+        if self.answers is not None:
+            if self.decision != "approve" or not self.answers or len(self.answers) > 4:
+                raise ValueError("Answers accompany an approval of 1-4 questions")
+            if any(len(k) > 2000 or not v.strip() or len(v) > 4000 for k, v in self.answers.items()):
+                raise ValueError("Each answer must be non-empty and bounded")
+        if self.message is not None and (self.decision != "reject" or not self.message.strip()):
+            raise ValueError("Feedback accompanies a rejection")
+        return self
+
+
+def question_texts(details):
+    questions = (details.get("tool_input") or {}).get("questions")
+    if not isinstance(questions, list):
+        return None
+    texts = [q.get("question") for q in questions if isinstance(q, dict)]
+    return texts if texts and len(texts) == len(questions) and all(isinstance(t, str) and t for t in texts) else None
 
 
 class ApprovalPolicy(ApprovalInput):
@@ -89,6 +114,7 @@ def auto_approve_pending(conn, room_id):
         WHERE r.id=? AND r.status='active' AND a.revoked=0 AND a.token_hash=b.agent_token_hash
         AND b.expires_at>? AND q.status='pending' AND q.expires_at>? AND q.alive_until>?
         AND json_extract(q.payload,'$.can_approve')=1
+        AND json_extract(q.payload,'$.kind') NOT IN ('question','plan')
         AND (s.agent_id IS NULL OR (s.harness=b.harness AND s.session_id=b.session_id AND s.agent_token_hash=a.token_hash))""",
         (room_id, now, now, now)).fetchall()
     for row in rows:
@@ -141,13 +167,14 @@ def register_approval_routes(app, db, operator):
         operator(request)
         with db.connect() as conn:
             prune(conn)
-            rows = conn.execute("""SELECT q.*,a.handle,a.room_id,r.title AS room_title,b.harness,b.session_id,
+            rows = conn.execute("""SELECT q.*,resp.response,a.handle,a.room_id,r.title AS room_title,b.harness,b.session_id,
                 COALESCE(o.native_resolved,0) AS native_resolved,o.dismissed_at,
                 (automatic.request_id IS NOT NULL) AS auto_approved
                 FROM approval_requests q JOIN approval_bridges b ON b.id=q.bridge_id
                 JOIN agents a ON a.id=b.agent_id JOIN rooms r ON r.id=a.room_id
                 LEFT JOIN approval_outcomes o ON o.request_id=q.id
                 LEFT JOIN approval_auto_decisions automatic ON automatic.request_id=q.id
+                LEFT JOIN approval_responses resp ON resp.request_id=q.id
                 WHERE q.status IN ('pending','decided','submitted')
                 OR (q.status='expired' AND o.dismissed_at IS NULL) OR q.created_at>?
                 ORDER BY CASE WHEN q.status='pending' THEN 0 WHEN q.status='expired' AND o.dismissed_at IS NULL THEN 1 ELSE 2 END,q.created_at DESC LIMIT 100""",
@@ -156,7 +183,7 @@ def register_approval_routes(app, db, operator):
             return {"auto_approve_rooms": {p["room_id"]: bool(p["auto_approve"]) for p in conn.execute("SELECT room_id,auto_approve FROM room_approval_policy")},
                     "connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
                 "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at", "expires_at", "native_resolved", "dismissed_at", "auto_approved")},
-                **json.loads(row["payload"])} for row in rows]}
+                **json.loads(row["payload"]), "response": json.loads(row["response"]) if row["response"] else None} for row in rows]}
 
     @app.post("/api/approvals/{approval_id}/dismiss")
     async def dismiss(approval_id: UUID, request: Request):
@@ -180,10 +207,21 @@ def register_approval_routes(app, db, operator):
                 raise HTTPException(404, "Approval request not found")
             if row["status"] != "pending" or row["alive_until"] <= time.time():
                 raise HTTPException(409, "This request has ended or already received a decision")
-            if body.decision == "approve" and not json.loads(row["payload"])["can_approve"]:
+            payload = json.loads(row["payload"])
+            if body.decision == "approve" and not payload["can_approve"]:
                 raise HTTPException(409, "Review and approve this request in the harness")
+            if payload["kind"] == "question" and body.decision == "approve":
+                if body.answers is None or set(body.answers) != set(question_texts(payload["details"]) or ()):
+                    raise HTTPException(422, "Answer every question before sending")
+            elif body.answers is not None:
+                raise HTTPException(422, "Only questions take answers")
+            if body.message is not None and payload["kind"] not in INTERACTIVE_KINDS:
+                raise HTTPException(422, "Feedback is only sent for questions and plans")
             conn.execute("UPDATE approval_requests SET status='decided',decision=?,decided_by=?,decided_at=? WHERE id=?",
                          (body.decision, username, time.time(), str(approval_id)))
+            response = body.model_dump(include={"answers", "message"}, exclude_none=True)
+            if response:
+                conn.execute("INSERT OR REPLACE INTO approval_responses VALUES (?,?)", (str(approval_id), json.dumps(response)))
         return {"status": "decided", "decision": body.decision}
 
     @app.post("/approval-bridge/requests")
@@ -232,7 +270,8 @@ def register_approval_routes(app, db, operator):
             if row["status"] == "decided":
                 # A decision is consumed once. Lost response never becomes an implicit approval.
                 conn.execute("UPDATE approval_requests SET status='submitted' WHERE id=?", (str(approval_id),))
-                return {"status": "decided", "decision": row["decision"]}
+                response = conn.execute("SELECT response FROM approval_responses WHERE request_id=?", (str(approval_id),)).fetchone()
+                return {"status": "decided", "decision": row["decision"], **(json.loads(response[0]) if response else {})}
             return {"status": row["status"]}
 
     @app.post("/approval-bridge/requests/{approval_id}/finish")

@@ -132,3 +132,12 @@
   .workspace-settings-menu .theme-control select{min-height:44px;font-size:16px}
   .workspace-settings-menu .notifications-toggle{min-height:44px;font-size:13px}
 }
+/* Swipe a message left or right (touch) to reply. */
+.message-bubble{touch-action:pan-y;transition:transform .18s ease-out}
+.message-bubble.swiping{transition:none;-webkit-user-select:none;user-select:none}
+.message-bubble.swiping::after{content:"↩";position:absolute;top:50%;width:28px;height:28px;margin-top:-14px;display:grid;place-items:center;border-radius:50%;background:var(--panel-light);color:var(--accent);font-size:15px;line-height:1;pointer-events:none;opacity:var(--swipe-progress,0);transform:scale(calc(.6 + .4 * var(--swipe-progress,0)))}
+.message-bubble[data-swipe="right"]::after{left:-40px}
+.message-bubble[data-swipe="left"]::after{right:-40px}
+.message-bubble.swipe-ready::after{background:var(--accent);color:var(--bg)}
+.swiping-reply .message-scroll{overflow-x:hidden}
+@media (prefers-reduced-motion:reduce){.message-bubble{transition:none}}

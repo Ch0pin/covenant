@@ -129,6 +129,10 @@ class FakeAPI:
         return "request"
     async def wait(self, aid):
         return self.decision
+    async def wait_result(self, aid):
+        if isinstance(self.decision, dict) or self.decision is None:
+            return self.decision
+        return {"status": "decided", "decision": self.decision}
     async def finish(self, aid, status):
         self.finished.append((aid, status))
 
@@ -386,3 +390,78 @@ def test_old_expired_notice_survives_until_dismissed(approvals):
     assert row["id"] == aid and row["status"] == "expired" and not row["native_resolved"]
     client.post(f"/api/approvals/{aid}/dismiss", headers=csrf)
     assert not client.get("/api/approvals").json()["requests"]
+
+
+QUESTIONS = {"questions": [
+    {"question": "Which database?", "header": "DB", "multiSelect": False,
+     "options": [{"label": "SQLite", "description": "local"}, {"label": "Postgres", "description": "server"}]},
+    {"question": "Which checks?", "header": "Checks", "multiSelect": True,
+     "options": [{"label": "Lint", "description": ""}, {"label": "Tests", "description": ""}]}]}
+
+
+def claude_question(a, tool_input=QUESTIONS, key="question"):
+    _, _, _, _, _, _, _, payload = a
+    return submit(a, {**payload, "request_key": key, "kind": "question",
+                      "details": {"tool_name": "AskUserQuestion", "tool_input": tool_input}})
+
+
+def test_claude_question_answers_reach_the_hook_once(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    aid = claude_question(approvals)
+    url = f"/api/approvals/{aid}/decision"
+    # Every question needs an answer; answers never accompany non-question approvals.
+    assert client.post(url, headers=csrf, json={"decision": "approve"}).status_code == 422
+    assert client.post(url, headers=csrf, json={"decision": "approve", "answers": {"Which database?": "SQLite"}}).status_code == 422
+    answers = {"Which database?": "SQLite", "Which checks?": "Lint, Tests"}
+    assert client.post(url, headers=csrf, json={"decision": "approve", "answers": answers}).status_code == 200
+    taken = client.post(f"/approval-bridge/requests/{aid}/take", headers=auth).json()
+    assert taken == {"status": "decided", "decision": "approve", "answers": answers}
+    assert client.post(f"/approval-bridge/requests/{aid}/take", headers=auth).json() == {"status": "submitted"}
+    row = next(r for r in client.get("/api/approvals").json()["requests"] if r["id"] == aid)
+    assert row["response"] == {"answers": answers} and row["kind"] == "question"
+
+
+def test_answers_and_feedback_are_rejected_for_ordinary_approvals(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    aid = submit(approvals)
+    url = f"/api/approvals/{aid}/decision"
+    assert client.post(url, headers=csrf, json={"decision": "approve", "answers": {"x": "y"}}).status_code == 422
+    assert client.post(url, headers=csrf, json={"decision": "reject", "message": "no"}).status_code == 422
+    assert client.post(url, headers=csrf, json={"decision": "approve"}).status_code == 200
+    assert client.post(f"/approval-bridge/requests/{aid}/take", headers=auth).json() == {"status": "decided", "decision": "approve"}
+
+
+def test_plan_rejection_feedback_reaches_the_hook(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    aid = submit(approvals, {**payload, "request_key": "plan", "kind": "plan",
+                             "details": {"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Do it"}}})
+    assert client.post(f"/api/approvals/{aid}/decision", headers=csrf, json={"decision": "reject", "message": "Add tests"}).status_code == 200
+    assert client.post(f"/approval-bridge/requests/{aid}/take", headers=auth).json() == {"status": "decided", "decision": "reject", "message": "Add tests"}
+
+
+def test_claude_hook_returns_answers_as_updated_input():
+    answers = {"Which database?": "Postgres", "Which checks?": "Lint"}
+    api = FakeAPI({"status": "decided", "decision": "approve", "answers": answers})
+    result = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s",
+                                      "tool_name": "AskUserQuestion", "tool_input": QUESTIONS}, api))
+    decision = result["hookSpecificOutput"]["decision"]
+    assert api.payload["kind"] == "question" and api.payload["can_approve"] is True
+    assert decision == {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": answers}}
+    declined = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s",
+                                        "tool_name": "AskUserQuestion", "tool_input": QUESTIONS}, FakeAPI("reject")))
+    assert declined["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+
+
+@pytest.mark.parametrize("result, behavior, text", [
+    ("approve", "allow", None),
+    ({"status": "decided", "decision": "reject", "message": "Add tests"}, "deny", "Add tests"),
+    (None, "deny", "expired")])
+def test_claude_hook_plan_approval(result, behavior, text):
+    api = FakeAPI(result)
+    out = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s",
+                                   "tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Do it"}}, api))
+    decision = out["hookSpecificOutput"]["decision"]
+    assert api.payload["kind"] == "plan" and decision["behavior"] == behavior
+    assert "updatedInput" not in decision
+    if text:
+        assert text in decision["message"]

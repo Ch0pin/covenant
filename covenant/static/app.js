@@ -550,6 +550,7 @@ function renderMessage(message, inThread = false) {
   reply.disabled = state.room?.status === "archived";
   reply.setAttribute("aria-label", `Reply to message #${message.id} from ${message.sender}`);
   reply.onclick = () => setReplyTarget(message); actions.append(reply); main.append(actions);
+  globalThis.CovenantSwipeReply?.attach(bubble, () => setReplyTarget(message));
   if (!inThread) {
     const details = element("details", "message-thread"), summary = element("summary", "thread-summary", "View thread");
     const body = element("div", "thread-body"), error = element("p", "error thread-error");

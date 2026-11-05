@@ -41,6 +41,72 @@
   expiredNotice.onclick = () => {dialog.showModal(); return refreshApprovals();};
   let currentRequests = [];
   const localDecisions = new Map(), submitting = new Set();
+  // Unsent answers survive the 2s refresh re-render: {answers: {question: {picked: [], other: ""}}, feedback: ""}.
+  const drafts = new Map(), OTHER = "\u0000other";
+  function draftFor(id) {
+    if (!drafts.has(id)) drafts.set(id, {answers: {}, feedback: ""});
+    return drafts.get(id);
+  }
+  function questionsOf(request) {
+    const questions = request.details.tool_input?.questions;
+    return Array.isArray(questions) ? questions.filter(q => q && typeof q.question === "string") : [];
+  }
+  function answerText(question, entry) {
+    const options = Array.isArray(question.options) ? question.options : [];
+    const picked = options.map(o => o?.label).filter(label => typeof label === "string" && entry?.picked?.includes(label));
+    const other = entry?.picked?.includes(OTHER) ? (entry.other || "").trim() : "";
+    return [...picked, ...(other ? [other] : [])].join(", ");
+  }
+  function renderQuestions(card, request) {
+    const draft = draftFor(request.id), pending = request.status === "pending";
+    questionsOf(request).forEach((question, index) => {
+      const box = element("fieldset", "approval-question");
+      box.append(element("legend", "", question.header ? `${question.header} · ${question.question}` : question.question));
+      if (!pending) {
+        const answer = request.response?.answers?.[question.question];
+        box.append(element("p", answer ? "" : "muted", answer || "No answer sent"));
+        card.append(box); return;
+      }
+      const entry = draft.answers[question.question] ||= {picked: [], other: ""};
+      const name = `approval-${request.id}-${index}`;
+      const pick = (value, checked) => {
+        entry.picked = question.multiSelect ? (checked ? [...new Set([...entry.picked, value])] : entry.picked.filter(v => v !== value)) : [value];
+      };
+      const options = Array.isArray(question.options) ? question.options : [];
+      let otherChoice = null;
+      const other = element("input", "approval-other");
+      for (const option of [...options.filter(o => typeof o?.label === "string"), {label: "Other", value: OTHER}]) {
+        const value = option.value || option.label;
+        const label = element("label", "approval-option");
+        const input = element("input");
+        input.type = question.multiSelect ? "checkbox" : "radio"; input.name = name; input.value = value;
+        input.checked = entry.picked.includes(value);
+        input.disabled = submitting.has(request.id) || unavailable;
+        input.onchange = () => {pick(value, input.checked); if (value === OTHER && input.checked) other.focus?.();};
+        if (value === OTHER) otherChoice = input;
+        label.append(input, element("span", "", option.label));
+        if (option.description) label.append(element("small", "muted", option.description));
+        box.append(label);
+        if (typeof option.preview === "string" && option.preview) box.append(element("pre", "approval-preview", option.preview));
+      }
+      other.type = "text"; other.placeholder = "Other answer"; other.value = entry.other; other.maxLength = 4000;
+      other.setAttribute("aria-label", `Other answer for: ${question.question}`);
+      other.disabled = submitting.has(request.id) || unavailable;
+      // Typing an answer selects Other in place; a re-render here would drop the caret.
+      other.oninput = () => {entry.other = other.value; if (other.value.trim() && !entry.picked.includes(OTHER)) {pick(OTHER, true); otherChoice.checked = true;}};
+      box.append(other);
+      card.append(box);
+    });
+  }
+  function feedbackBox(request, placeholder) {
+    const draft = draftFor(request.id);
+    const box = element("textarea", "approval-feedback");
+    box.placeholder = placeholder; box.value = draft.feedback; box.maxLength = 4000; box.rows = 3;
+    box.setAttribute("aria-label", placeholder);
+    box.disabled = submitting.has(request.id) || unavailable;
+    box.oninput = () => {draft.feedback = box.value;};
+    return box;
+  }
   const requestDialog = $("#approval-request-dialog"), requestBody = $("#approval-request-body");
   const requestActions = $("#approval-request-actions"), requestError = $("#approval-request-error");
   let selectedId = null, selectedSignature = "", unavailable = false;
@@ -102,7 +168,7 @@
     summary.append(element("strong", "", `${request.handle} · ${request.harness}`));
     summary.append(element("span", "muted", `${request.details.tool_name || request.kind} · ${request.room_title}`));
     card.append(summary);
-    const status = `${labels[request.status] || request.status}${request.decision ? " · " + (request.auto_approved ? "Auto-approved" : request.decision === "approve" ? "Approved once" : "Rejected") : ""}`;
+    const status = `${labels[request.status] || request.status}${request.decision ? " · " + (request.auto_approved ? "Auto-approved" : request.decision === "approve" ? ({question: "Answered", plan: "Plan approved"}[request.kind] || "Approved once") : request.kind === "question" ? "Declined" : "Rejected") : ""}`;
     card.append(element("p", "approval-status", status));
     if (request.status === "pending" && request.expires_at) card.append(element("p", "muted", `Expires at ${timeText(request.expires_at)}`));
     if (request.status === "expired") {
@@ -121,7 +187,16 @@
     const preview = content.command || content.tool_input?.command || content.item?.command;
     if (content.tool_name) card.append(element("strong", "approval-tool", content.tool_name));
     if (content.reason) card.append(element("p", "", content.reason));
-    card.append(element("pre", "approval-preview", preview || JSON.stringify(content.tool_input || content.item?.changes || content.networkApprovalContext || content, null, 2)));
+    if (request.kind === "question") {
+      card.append(element("p", "muted", "Claude is asking you. Your answers go straight back to the session."));
+      renderQuestions(card, request);
+    } else if (request.kind === "plan") {
+      card.append(element("p", "muted", "Claude wants to leave plan mode and start working on this plan."));
+      card.append(element("pre", "approval-preview approval-plan", typeof content.tool_input?.plan === "string" ? content.tool_input.plan : JSON.stringify(content.tool_input || {}, null, 2)));
+    } else {
+      card.append(element("pre", "approval-preview", preview || JSON.stringify(content.tool_input || content.item?.changes || content.networkApprovalContext || content, null, 2)));
+    }
+    if (request.response?.message) card.append(element("p", "muted", `Your feedback: ${request.response.message}`));
     if (content.cwd) card.append(element("p", "approval-path muted", content.cwd));
     for (const key of ["additionalPermissions", "networkApprovalContext", "grantRoot"]) {
       if (content[key]) card.append(element("pre", "approval-preview", `Requested access: ${JSON.stringify(content[key], null, 2)}`));
@@ -134,7 +209,10 @@
     card.append(detail);
     if (request.status === "pending") {
       const actions = element("div", "approval-actions");
-      for (const [decision, label] of [["approve", "Approve once"], ["reject", "Reject"]]) {
+      if (request.kind === "plan") card.append(feedbackBox(request, "Optional feedback if you reject the plan"));
+      const choices = {question: [["approve", "Send answers"], ["reject", "Decline to answer"]], plan: [["approve", "Approve plan"], ["reject", "Reject plan"]]}[request.kind]
+        || [["approve", "Approve once"], ["reject", "Reject"]];
+      for (const [decision, label] of choices) {
         const control = element("button", decision === "approve" ? "primary" : "quiet danger", label);
         control.type = "button"; control.dataset.approvalAction = `${request.id}:${decision}`;
         control.disabled = decision === "approve" && !request.can_approve;
@@ -148,17 +226,35 @@
     }
     return card;
   }
+  function decisionBody(request, decision) {
+    const body = {decision}, draft = draftFor(request.id);
+    if (request.kind === "question" && decision === "approve") {
+      const answers = {};
+      for (const question of questionsOf(request)) {
+        const text = answerText(question, draft.answers[question.question]);
+        if (!text) throw new Error(`Answer “${question.header || question.question}” before sending`);
+        answers[question.question] = text;
+      }
+      body.answers = answers;
+    }
+    if (request.kind === "plan" && decision === "reject" && draft.feedback.trim()) body.message = draft.feedback.trim();
+    return body;
+  }
   async function decideRequest(request, decision) {
     if (!state.me || unavailable || submitting.has(request.id)) return;
     const user = state.me;
+    let body;
+    try {body = decisionBody(request, decision);}
+    catch (error) {requestError.textContent = error.message; requestError.hidden = false; toast(error.message); return;}
+    requestError.hidden = true;
     submitting.add(request.id); selectedSignature = ""; renderSelected();
     try {
-      await api(`/api/approvals/${request.id}/decision`, {method: "POST", body: JSON.stringify({decision})});
+      await api(`/api/approvals/${request.id}/decision`, {method: "POST", body: JSON.stringify(body)});
       if (state.me !== user) return;
-      localDecisions.set(request.id, decision);
+      localDecisions.set(request.id, decision); drafts.delete(request.id);
       render(currentRequests.map(item => item.id === request.id ? {...item, status: "decided", decision} : item));
       if (selectedId === request.id && requestDialog.open) requestDialog.close();
-      toast(decision === "approve" ? "Approval queued for the harness" : "Rejection queued for the harness");
+      toast(request.kind === "question" ? (decision === "approve" ? "Answers sent to Claude" : "Declined; Claude was told") : decision === "approve" ? "Approval queued for the harness" : "Rejection queued for the harness");
     } catch (error) {
       if (state.me === user) {
         toast(error.message);
@@ -236,7 +332,7 @@
       for (const selector of ["#reopen-participants", "#toggle-participants", "#toggle-approvals", "#mobile-details"]) $(selector).dataset.approvalExpired = "false";
       updateConnections([]);
       updateRoomApprovals([]);
-      signature = ""; known.clear(); localDecisions.clear(); currentRequests = []; epoch = null; showPendingCount(0); list.replaceChildren(); pendingList.replaceChildren();
+      signature = ""; known.clear(); localDecisions.clear(); drafts.clear(); currentRequests = []; epoch = null; showPendingCount(0); list.replaceChildren(); pendingList.replaceChildren();
       selectedId = null; selectedSignature = ""; submitting.clear(); unavailable = false;
       policies = null; policyAvailable = false; policyPending = null; policyRevision++; renderPolicy();
       requestBody.replaceChildren(); requestActions.replaceChildren();

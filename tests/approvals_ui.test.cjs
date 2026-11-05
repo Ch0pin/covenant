@@ -14,9 +14,9 @@ function fixture(){
   showModal(){this.open=true;}close(){this.open=false;this.onclose?.();}focus(){document.activeElement=this;}
  }
  const nodes=new Map(),listeners={};let refresh;
- const state={me:{username:'operator'},room:{id:'a',status:'active'}},network={rows:[],connections:[],fail:false,decisions:[],policies:{},policyChanges:[]};
+ const state={me:{username:'operator'},room:{id:'a',status:'active'}},network={rows:[],connections:[],fail:false,decisions:[],bodies:[],policies:{},policyChanges:[]};
  const ctx=vm.createContext({state,document,$:s=>{if(!nodes.has(s))nodes.set(s,new Node('div'));return nodes.get(s);},element:(...args)=>new Node(...args),timeText:()=>'',notificationsEnabled:false,toast(){},window:{addEventListener:(name,fn)=>listeners[name]=fn},setInterval:fn=>refresh=fn,
- api:async(path,options)=>{if(network.fail)throw Object.assign(new Error('offline'),{status:503});if(options&&path.endsWith('/approval-policy')){const value=JSON.parse(options.body).auto_approve;const room=path.split('/')[3];network.policyChanges.push({room,value});network.policies[room]=value;return {auto_approve:value,approved_count:0};}if(options){network.decisions.push(JSON.parse(options.body).decision);return {status:'decided'};}return {requests:network.rows,connections:network.connections,auto_approve_rooms:network.policies};}});
+ api:async(path,options)=>{if(network.fail)throw Object.assign(new Error('offline'),{status:503});if(options&&path.endsWith('/approval-policy')){const value=JSON.parse(options.body).auto_approve;const room=path.split('/')[3];network.policyChanges.push({room,value});network.policies[room]=value;return {auto_approve:value,approved_count:0};}if(options){network.bodies.push(JSON.parse(options.body));network.decisions.push(JSON.parse(options.body).decision);return {status:'decided'};}return {requests:network.rows,connections:network.connections,auto_approve_rooms:network.policies};}});
  vm.runInContext(source,ctx);return{nodes,network,state,refresh,listeners,Node,ctx};
 }
 const request={id:'one',status:'pending',handle:'sol',harness:'codex',room_title:'Room',session_id:'session',kind:'command',can_approve:true,details:{command:'<script>untrusted</script>'}};
@@ -202,4 +202,43 @@ test('auto-approve is disabled when unavailable and clears on logout',async()=>{
 test('automatically approved decisions are identified in history',async()=>{
  const f=fixture();f.network.rows=[{...request,status:'decided',decision:'approve',auto_approved:true}];await f.refresh();
  assert.ok(f.nodes.get('#approvals-list').querySelectorAll('p').some(n=>n.textContent.includes('Auto-approved')));
+});
+
+const askRequest={...request,id:'ask',harness:'claude',kind:'question',details:{tool_name:'AskUserQuestion',tool_input:{questions:[
+ {question:'Which database?',header:'DB',multiSelect:false,options:[{label:'SQLite',description:'local'},{label:'Postgres',description:'server'}]},
+ {question:'Which checks?',header:'Checks',multiSelect:true,options:[{label:'Lint'},{label:'Tests'}]}]}}};
+function inputs(f){return f.nodes.get('#approval-request-body').querySelectorAll('input');}
+test('Claude questions are answered in the browser with choices, multi-select and Other text',async()=>{
+ const f=fixture();f.network.rows=[askRequest];await f.refresh();
+ openRequest(f,'ask');
+ const send=action(f,'ask','approve');assert.equal(send.textContent,'Send answers');
+ // Unanswered questions are not sent.
+ await send.onclick();assert.deepEqual(f.network.bodies,[]);
+ assert.equal(f.nodes.get('#approval-request-error').hidden,false);
+ const choose=(value,i)=>{const input=inputs(f).filter(n=>n.name==='approval-ask-'+i).find(n=>n.value===value);input.checked=true;input.onchange();};
+ choose('Postgres',0);choose('Lint',1);
+ // A refresh keeps the draft; typing Other selects it without re-rendering.
+ f.network.rows=[askRequest,{...request,id:'other'}];await f.refresh();
+ assert.ok(inputs(f).find(n=>n.value==='Postgres').checked);
+ const other=inputs(f).filter(n=>n.className==='approval-other')[1];other.value='Typecheck';other.oninput();
+ assert.ok(inputs(f).filter(n=>n.name==='approval-ask-1').find(n=>n.value!=='Lint'&&n.value!=='Tests').checked);
+ await action(f,'ask','approve').onclick();
+ assert.deepEqual(f.network.bodies,[{decision:'approve',answers:{'Which database?':'Postgres','Which checks?':'Lint, Typecheck'}}]);
+ assert.equal(f.nodes.get('#pending-approvals').querySelectorAll('.approval-row').length,1);
+});
+test('Claude plans show the plan text and send optional rejection feedback',async()=>{
+ const plan={...request,id:'plan',harness:'claude',kind:'plan',details:{tool_name:'ExitPlanMode',tool_input:{plan:'1. Edit app.py'}}};
+ const f=fixture();f.network.rows=[plan];await f.refresh();
+ const card=openRequest(f,'plan');
+ assert.ok(card.querySelectorAll('pre').some(n=>n.textContent==='1. Edit app.py'));
+ assert.equal(action(f,'plan','approve').textContent,'Approve plan');
+ const feedback=f.nodes.get('#approval-request-body').querySelectorAll('textarea')[0];
+ feedback.value='Add tests first';feedback.oninput();
+ await action(f,'plan','reject').onclick();
+ assert.deepEqual(f.network.bodies,[{decision:'reject',message:'Add tests first'}]);
+});
+test('ordinary approvals still send only the decision',async()=>{
+ const f=fixture();f.network.rows=[request];await f.refresh();
+ await action(f,'one','approve').onclick();
+ assert.deepEqual(f.network.bodies,[{decision:'approve'}]);
 });
