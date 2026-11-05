@@ -40,9 +40,13 @@ class Decision(ApprovalInput):
     decision: Literal["approve", "reject"]
     answers: dict[str, str] | None = None
     message: str | None = Field(default=None, max_length=4000)
+    # Approving a Claude plan can also switch the session to auto-accept file edits.
+    auto_accept_edits: Literal[True] | None = None
 
     @model_validator(mode="after")
     def bounded_response(self):
+        if self.auto_accept_edits and self.decision != "approve":
+            raise ValueError("Auto-accepting edits accompanies a plan approval")
         if self.answers is not None:
             if self.decision != "approve" or not self.answers or len(self.answers) > 4:
                 raise ValueError("Answers accompany an approval of 1-4 questions")
@@ -215,11 +219,13 @@ def register_approval_routes(app, db, operator):
                     raise HTTPException(422, "Answer every question before sending")
             elif body.answers is not None:
                 raise HTTPException(422, "Only questions take answers")
+            if body.auto_accept_edits and payload["kind"] != "plan":
+                raise HTTPException(422, "Only plans can switch to auto-accepting edits")
             if body.message is not None and payload["kind"] not in INTERACTIVE_KINDS:
                 raise HTTPException(422, "Feedback is only sent for questions and plans")
             conn.execute("UPDATE approval_requests SET status='decided',decision=?,decided_by=?,decided_at=? WHERE id=?",
                          (body.decision, username, time.time(), str(approval_id)))
-            response = body.model_dump(include={"answers", "message"}, exclude_none=True)
+            response = body.model_dump(include={"answers", "message", "auto_accept_edits"}, exclude_none=True)
             if response:
                 conn.execute("INSERT OR REPLACE INTO approval_responses VALUES (?,?)", (str(approval_id), json.dumps(response)))
         return {"status": "decided", "decision": body.decision}

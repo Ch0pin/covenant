@@ -270,12 +270,15 @@ class CodexApprovals:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def claude_decision(allowed, message="Operator rejected the request in Covenant", updated_input=None):
+def claude_decision(allowed, message="Operator rejected the request in Covenant", updated_input=None, updated_permissions=None):
     decision = {"behavior": "allow" if allowed else "deny"}
     if not allowed:
         decision["message"] = message
-    elif updated_input is not None:
-        decision["updatedInput"] = updated_input
+    else:
+        if updated_input is not None:
+            decision["updatedInput"] = updated_input
+        if updated_permissions:
+            decision["updatedPermissions"] = updated_permissions
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
 
 
@@ -292,6 +295,9 @@ def claude_prompt_result(kind, tool_input, result):
             return claude_decision(True, updated_input={**tool_input, "answers": answers})
         return claude_decision(False, "The operator declined to answer in Covenant" + (f": {feedback}" if feedback else ""))
     if kind == "plan":
+        if approved and result.get("auto_accept_edits") is True:
+            # Same as Claude's own "Yes, and auto-accept edits": only this session, never saved settings.
+            return claude_decision(True, updated_permissions=[{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])
         if approved:
             return claude_decision(True)
         return claude_decision(False, "The operator rejected the plan in Covenant" + (f". Feedback: {feedback}" if feedback else "")

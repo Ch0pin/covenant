@@ -237,6 +237,19 @@ test('Claude plans show the plan text and send optional rejection feedback',asyn
  await action(f,'plan','reject').onclick();
  assert.deepEqual(f.network.bodies,[{decision:'reject',message:'Add tests first'}]);
 });
+test('Claude plans can be approved with auto-accepted edits; plain approval is unchanged',async()=>{
+ const plan={...request,id:'plan',harness:'claude',kind:'plan',details:{tool_name:'ExitPlanMode',tool_input:{plan:'1. Edit app.py'}}};
+ const f=fixture();f.network.rows=[plan];await f.refresh();
+ const edits=action(f,'plan','approve-edits');
+ assert.equal(edits.textContent,'Approve + auto-accept edits');
+ await edits.onclick();
+ assert.deepEqual(f.network.bodies,[{decision:'approve',auto_accept_edits:true}]);
+ const g=fixture();g.network.rows=[plan];await g.refresh();
+ await action(g,'plan','approve').onclick();
+ assert.deepEqual(g.network.bodies,[{decision:'approve'}]);
+ const h=fixture();h.network.rows=[request];await h.refresh();
+ assert.equal(action(h,'one','approve-edits'),undefined);
+});
 test('ordinary approvals still send only the decision',async()=>{
  const f=fixture();f.network.rows=[request];await f.refresh();
  await action(f,'one','approve').onclick();

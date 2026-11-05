@@ -210,15 +210,18 @@
     if (request.status === "pending") {
       const actions = element("div", "approval-actions");
       if (request.kind === "plan") card.append(feedbackBox(request, "Optional feedback if you reject the plan"));
-      const choices = {question: [["approve", "Send answers"], ["reject", "Decline to answer"]], plan: [["approve", "Approve plan"], ["reject", "Reject plan"]]}[request.kind]
+      // The optional third entry names a variant of the decision, sent as an extra field.
+      const choices = {question: [["approve", "Send answers"], ["reject", "Decline to answer"]],
+        plan: [["approve", "Approve plan"], ["approve", "Approve + auto-accept edits", "edits"], ["reject", "Reject plan"]]}[request.kind]
         || [["approve", "Approve once"], ["reject", "Reject"]];
-      for (const [decision, label] of choices) {
-        const control = element("button", decision === "approve" ? "primary" : "quiet danger", label);
-        control.type = "button"; control.dataset.approvalAction = `${request.id}:${decision}`;
+      for (const [decision, label, variant] of choices) {
+        const control = element("button", decision === "reject" ? "quiet danger" : variant ? "quiet" : "primary", label);
+        control.type = "button"; control.dataset.approvalAction = `${request.id}:${variant ? decision + "-" + variant : decision}`;
+        if (variant === "edits") control.title = "Approve the plan and let Claude edit files in this session without asking";
         control.disabled = decision === "approve" && !request.can_approve;
         if (control.disabled) control.title = "Complete details or this decision are unavailable; use the harness prompt";
         control.disabled ||= submitting.has(request.id) || unavailable;
-        control.onclick = () => decideRequest(request, decision);
+        control.onclick = () => decideRequest(request, decision, variant);
         actions.append(control);
       }
       if (!request.can_approve) actions.append(element("small", "muted", "Approve from the harness after reviewing its full prompt."));
@@ -226,8 +229,9 @@
     }
     return card;
   }
-  function decisionBody(request, decision) {
+  function decisionBody(request, decision, variant) {
     const body = {decision}, draft = draftFor(request.id);
+    if (request.kind === "plan" && decision === "approve" && variant === "edits") body.auto_accept_edits = true;
     if (request.kind === "question" && decision === "approve") {
       const answers = {};
       for (const question of questionsOf(request)) {
@@ -240,11 +244,11 @@
     if (request.kind === "plan" && decision === "reject" && draft.feedback.trim()) body.message = draft.feedback.trim();
     return body;
   }
-  async function decideRequest(request, decision) {
+  async function decideRequest(request, decision, variant) {
     if (!state.me || unavailable || submitting.has(request.id)) return;
     const user = state.me;
     let body;
-    try {body = decisionBody(request, decision);}
+    try {body = decisionBody(request, decision, variant);}
     catch (error) {requestError.textContent = error.message; requestError.hidden = false; toast(error.message); return;}
     requestError.hidden = true;
     submitting.add(request.id); selectedSignature = ""; renderSelected();
@@ -254,7 +258,7 @@
       localDecisions.set(request.id, decision); drafts.delete(request.id);
       render(currentRequests.map(item => item.id === request.id ? {...item, status: "decided", decision} : item));
       if (selectedId === request.id && requestDialog.open) requestDialog.close();
-      toast(request.kind === "question" ? (decision === "approve" ? "Answers sent to Claude" : "Declined; Claude was told") : decision === "approve" ? "Approval queued for the harness" : "Rejection queued for the harness");
+      toast(body.auto_accept_edits ? "Plan approved; Claude will auto-accept edits" : request.kind === "question" ? (decision === "approve" ? "Answers sent to Claude" : "Declined; Claude was told") : decision === "approve" ? "Approval queued for the harness" : "Rejection queued for the harness");
     } catch (error) {
       if (state.me === user) {
         toast(error.message);

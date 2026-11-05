@@ -465,3 +465,33 @@ def test_claude_hook_plan_approval(result, behavior, text):
     assert "updatedInput" not in decision
     if text:
         assert text in decision["message"]
+
+
+def test_plan_approval_can_switch_the_session_to_auto_accept_edits(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    ordinary = submit(approvals, {**payload, "request_key": "ordinary"})
+    url = lambda aid: f"/api/approvals/{aid}/decision"
+    # Only a plan approval can carry it.
+    assert client.post(url(ordinary), headers=csrf, json={"decision": "approve", "auto_accept_edits": True}).status_code == 422
+    plan = submit(approvals, {**payload, "request_key": "plan", "kind": "plan",
+                              "details": {"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Do it"}}})
+    assert client.post(url(plan), headers=csrf, json={"decision": "reject", "auto_accept_edits": True}).status_code == 422
+    assert client.post(url(plan), headers=csrf, json={"decision": "approve", "auto_accept_edits": False}).status_code == 422
+    assert client.post(url(plan), headers=csrf, json={"decision": "approve", "auto_accept_edits": True}).status_code == 200
+    assert client.post(f"/approval-bridge/requests/{plan}/take", headers=auth).json() == {
+        "status": "decided", "decision": "approve", "auto_accept_edits": True}
+
+
+def test_claude_hook_plan_approval_with_auto_accept_edits_sets_the_session_mode():
+    api = FakeAPI({"status": "decided", "decision": "approve", "auto_accept_edits": True})
+    out = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s",
+                                   "tool_name": "ExitPlanMode", "tool_input": {"plan": "1. Do it"}}, api))
+    assert out["hookSpecificOutput"]["decision"] == {"behavior": "allow", "updatedPermissions": [
+        {"type": "setMode", "mode": "acceptEdits", "destination": "session"}]}
+    # A plain approval stays a plain allow, and other tools never change the mode.
+    plain = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s",
+                                     "tool_name": "ExitPlanMode", "tool_input": {"plan": "1."}}, FakeAPI("approve")))
+    assert plain["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
+    tool = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+                                    "tool_input": {}}, FakeAPI({"status": "decided", "decision": "approve", "auto_accept_edits": True})))
+    assert tool["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
