@@ -29,6 +29,38 @@ from .threads import register_thread_routes, thread_root
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "covenant_session"
+MAX_BODY = 100_000
+
+
+class BodyLimit:
+    """Enforces MAX_BODY on bodies sent without Content-Length (chunked), which the header check cannot see.
+
+    The server already caps declared bodies at their Content-Length, so only undeclared ones are buffered here.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or scope["method"] in {"GET", "HEAD", "OPTIONS"}
+                or any(k == b"content-length" for k, _ in scope["headers"])):
+            return await self.app(scope, receive, send)
+        messages, size = [], 0
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                break
+            size += len(message.get("body", b""))
+            if size > MAX_BODY:
+                return await JSONResponse({"detail": "Request too large"}, status_code=413)(scope, receive, send)
+            if not message.get("more_body"):
+                break
+
+        async def replay():
+            return messages.pop(0) if messages else await receive()
+
+        await self.app(scope, replay, send)
 
 
 class Input(BaseModel):
@@ -135,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[
         "127.0.0.1", "localhost", urlsplit(settings.public_base_url).hostname])
+    app.add_middleware(BodyLimit)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
@@ -150,7 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if origin and origin not in settings.allowed_origins:
                 return JSONResponse({"detail": "Untrusted request origin"}, status_code=403)
             length = request.headers.get("content-length", "0")
-            if not length.isdigit() or int(length) > 100_000:
+            if not length.isdigit() or int(length) > MAX_BODY:
                 return JSONResponse({"detail": "Request too large"}, status_code=413)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"

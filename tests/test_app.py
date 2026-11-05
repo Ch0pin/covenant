@@ -223,6 +223,25 @@ def test_login_rate_limit(setup):
     assert client.post("/api/login", json={"username": "operator", "password": PASSWORD}).status_code == 429
 
 
+def test_body_size_limit_also_applies_to_chunked_bodies(setup):
+    client, _, _, _, rid, (alice, _) = setup
+    big = b"x" * 200_000
+    login = {"username": "operator", "password": "wrong"}
+    # A declared oversized body is refused before it is read.
+    assert client.post("/api/login", content=big, headers={"Content-Type": "application/json"}).status_code == 413
+    # Chunked bodies carry no Content-Length; they used to bypass the limit.
+    chunked = lambda data: iter([data[i:i + 8192] for i in range(0, len(data), 8192)])
+    assert client.post("/api/login", content=chunked(big), headers={"Content-Type": "application/json"}).status_code == 413
+    # A small chunked body still reaches the route unchanged.
+    response = client.post("/api/login", content=chunked(json.dumps(login).encode()),
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 401
+    body = json.dumps({"text": "@everyone chunked hello", "client_message_id": str(uuid4())}).encode()
+    response = client.post(f"/{rid}/messages", content=chunked(body),
+                           headers={**bearer(alice), "Content-Type": "application/json"})
+    assert response.status_code == 200 and response.json()["text"] == "@everyone chunked hello"
+
+
 @pytest.mark.parametrize("url", ["https://example.com/path", "http://example.com", "https://user:pass@example.com", "https://example.com?x=1"])
 def test_invalid_public_configuration(url):
     with pytest.raises(ValueError):

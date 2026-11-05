@@ -332,3 +332,40 @@ def test_http_join_cannot_take_another_active_participants_native_session(isolat
                 assert conn.execute('SELECT agent_id FROM approval_sessions').fetchone()[0] == aid
                 assert conn.execute('SELECT agent_id FROM delivery_bindings').fetchone()[0] == aid
     asyncio.run(run())
+
+
+def run_hook_main(monkeypatch, capsys, database, payload):
+    import io
+    from covenant import claude_approvals
+    monkeypatch.delenv('COVENANT_APPROVAL_TOKEN', raising=False)
+    monkeypatch.setattr(sys, 'argv', ['covenant.claude_approvals', '--database', str(database), '--port', '8765'])
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    claude_approvals.main()
+    return capsys.readouterr()
+
+
+def test_claude_hook_outage_keeps_native_prompt_unless_session_is_linked(isolated, monkeypatch, capsys, tmp_path):
+    from covenant import claude_approvals
+    import sqlite3
+    settings, db, sid, rid, aid, token = isolated
+    request = {'hook_event_name': 'PermissionRequest', 'session_id': sid, 'tool_name': 'Bash', 'tool_input': {'command': 'ls'}}
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError('database is locked')
+    # A session that never joined, during an outage: Claude keeps its own prompt (no output) instead of a denial.
+    with monkeypatch.context() as patch:
+        patch.setattr(claude_approvals, 'session_binding', locked)
+        out = run_hook_main(patch, capsys, settings.database, request)
+    assert out.out == '' and 'normal Claude prompt' in out.err
+    # A damaged database file behaves the same way.
+    broken = tmp_path / 'broken.sqlite3'
+    broken.write_bytes(b'not a database' * 100)
+    assert run_hook_main(monkeypatch, capsys, broken, request).out == ''
+    # Once the session is linked, an outage still denies, as before.
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    with monkeypatch.context() as patch:
+        patch.setattr(claude_approvals, 'create_bridge', locked)
+        out = run_hook_main(patch, capsys, settings.database, request)
+    decision = json.loads(out.out)['hookSpecificOutput']['decision']
+    assert decision['behavior'] == 'deny' and 'unavailable' in decision['message']

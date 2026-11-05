@@ -92,7 +92,8 @@ def session_binding(db, session_id):
         return dict(row) if row else None
 
 
-async def dispatch(payload, db, port, api_factory=ApprovalClient):
+async def dispatch(payload, db, port, api_factory=ApprovalClient, progress=None):
+    progress = {} if progress is None else progress
     event = payload.get('hook_event_name')
     session_id = str(UUID(payload['session_id']))
     if event == 'PostToolUse':
@@ -118,6 +119,7 @@ async def dispatch(payload, db, port, api_factory=ApprovalClient):
     binding = session_binding(db, session_id)
     if not binding:
         return None  # Unjoined Claude sessions keep their normal native prompts.
+    progress['linked'] = True
     if binding['revoked'] or binding['status'] != 'active' or binding['agent_token_hash'] != binding['token_hash']:
         return claude_decision(False, 'Covenant access is paused or ended. Ask the operator to restore access and rejoin.')
     with db.connect() as conn:
@@ -146,6 +148,7 @@ def main():
         return
     payload = {}
     result = None
+    progress = {}
     try:
         payload = json.loads(sys.stdin.read(100001))
         if not args.database.is_file():
@@ -156,10 +159,14 @@ def main():
                 # Setup can precede the first upgraded server start. No session
                 # could have registered yet, so preserve ordinary native prompts.
                 return
-        result = asyncio.run(dispatch(payload, db, args.port))
+        result = asyncio.run(dispatch(payload, db, args.port, progress=progress))
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError):
-        if payload.get('hook_event_name') == 'PermissionRequest':
+        if payload.get('hook_event_name') == 'PermissionRequest' and progress.get('linked'):
             result = claude_decision(False, 'Covenant approval hook unavailable. Check the local server and hook setup.')
+        elif payload.get('hook_event_name') == 'PermissionRequest':
+            # Not known to be linked: an outage must not deny prompts in sessions that never joined Covenant.
+            # Returning nothing leaves Claude's own prompt in place, so nothing is approved silently.
+            print('Covenant approval hook unavailable; using the normal Claude prompt.', file=sys.stderr)
         else:
             print('Covenant approval registration unavailable; check setup and rejoin.', file=sys.stderr)
     if result is not None:
