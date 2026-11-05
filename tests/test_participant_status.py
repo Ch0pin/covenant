@@ -267,3 +267,38 @@ def test_recent_activity_expires_without_becoming_an_unresponsive_verdict():
     status = participant_status(agent, 'active', None, None, None, None,
                                 now=1021, warning_seconds=120, activity_at=900)
     assert status['code'] == 'connected'
+
+
+def test_claude_session_end_shows_ended_until_the_agent_reports_again(isolated):
+    from fastapi.testclient import TestClient
+    from covenant.claude_approvals import dispatch
+    settings, db, sid, rid, aid, token = isolated
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    with TestClient(create_app(settings), base_url=settings.public_base_url) as client:
+        login = client.post('/api/login', json={'username': 'test', 'password': 'isolated-password-123'})
+        assert login.status_code == 200
+        agent = {'Authorization': 'Bearer ' + token}
+        status = lambda: client.get(f'/api/rooms/{rid}/participant-status').json()['statuses'][aid]
+        assert client.post(f'/{rid}/delivery-status', headers=agent, json={'mode': 'claude', 'state': 'listening'}).status_code == 200
+        assert status()['code'] != 'session_ended'
+        asyncio.run(dispatch({'hook_event_name': 'SessionEnd', 'session_id': sid}, db, settings.port))
+        ended = status()
+        assert ended['code'] == 'session_ended' and ended['label'] == 'Session ended'
+        # A new session reporting in replaces the ended state.
+        assert client.post(f'/{rid}/delivery-status', headers=agent, json={'mode': 'claude', 'state': 'listening'}).status_code == 200
+        assert status()['code'] != 'session_ended'
+
+
+def test_session_end_does_not_mark_a_rotated_invitation(isolated):
+    from covenant.claude_approvals import dispatch
+    settings, db, sid, rid, aid, token = isolated
+    join = {'hook_event_name': 'PostToolUse', 'session_id': sid, 'tool_name': 'mcp__covenant__join_room',
+        'tool_input': {'room_url': settings.public_base_url + '/' + rid, 'access_token': token}, 'tool_response': {}}
+    assert asyncio.run(dispatch(join, db, settings.port))
+    with db.connect() as conn:
+        conn.execute("UPDATE agents SET token_hash='rotated' WHERE id=?", (aid,))
+    asyncio.run(dispatch({'hook_event_name': 'SessionEnd', 'session_id': sid}, db, settings.port))
+    with db.connect() as conn:
+        assert not conn.execute("SELECT 1 FROM agent_delivery_status WHERE agent_id=? AND state='ended'", (aid,)).fetchone()

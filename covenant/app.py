@@ -4,7 +4,7 @@ import re
 import secrets
 import sqlite3
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -30,6 +30,7 @@ from .threads import register_thread_routes, thread_root
 STATIC = Path(__file__).parent / "static"
 COOKIE = "covenant_session"
 MAX_BODY = 100_000
+LOGIN_TRACKED_IPS = 2048
 
 
 class BodyLimit:
@@ -141,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
     db = Database(settings.database)
     conditions = defaultdict(asyncio.Condition)
-    login_attempts = defaultdict(deque)
+    login_attempts = OrderedDict()  # ip -> recent attempt times, least recently active first
     dummy_hash = hash_password(secrets.token_urlsafe(24))
 
     @asynccontextmanager
@@ -361,16 +362,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def login(body: Login, request: Request, response: Response):
         now = time.time()
         ip = request.client.host if request.client else "unknown"
-        # Bound memory and throttle expensive password verification before running it.
-        if len(login_attempts) > 2048:
-            for key in list(login_attempts):
-                if not login_attempts[key] or login_attempts[key][-1] < now - 60:
-                    del login_attempts[key]
-            if len(login_attempts) > 2048:
-                raise HTTPException(429, "Please try again in 60 seconds", headers={"Retry-After": "60"})
-        attempts = login_attempts[ip]
+        # Throttle expensive password verification per address before running it.
+        attempts = login_attempts.pop(ip, None) or deque()
         while attempts and attempts[0] < now - 60:
             attempts.popleft()
+        login_attempts[ip] = attempts  # Re-inserted as the most recently active address.
+        # Bound memory by forgetting the quietest addresses; a full table never locks out everyone.
+        while len(login_attempts) > LOGIN_TRACKED_IPS:
+            login_attempts.popitem(last=False)
         if len(attempts) >= 10:
             raise HTTPException(429, "Please try again in 60 seconds", headers={"Retry-After": "60"})
         attempts.append(now)

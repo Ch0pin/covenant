@@ -184,6 +184,9 @@ def participant_status(agent, room_state, delivery, approval, receipt, native, *
         return result("paused", "Conversation paused", "warning")
     if not agent["joined_at"]:
         return result("not_joined", "Not joined yet")
+    if delivery and delivery["state"] == "ended":
+        return result("session_ended", "Session ended", "neutral", delivery["updated_at"],
+                      "The agent's Claude Code session exited. It shows as connected again after it rejoins.")
     if approval:
         label = "Waiting for approval" if approval["status"] == "pending" else "Approval response pending"
         return result("approval", label, "warning", approval["created_at"], "A native action is waiting for the operator or its decision to reach the harness.")

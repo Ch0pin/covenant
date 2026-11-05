@@ -223,6 +223,24 @@ def test_login_rate_limit(setup):
     assert client.post("/api/login", json={"username": "operator", "password": PASSWORD}).status_code == 429
 
 
+def test_many_login_addresses_never_lock_out_everyone(setup, monkeypatch):
+    import covenant.app
+    _, app, settings, _, _, _ = setup
+    monkeypatch.setattr(covenant.app, "LOGIN_TRACKED_IPS", 3)
+    def attempt(ip, password="wrong"):
+        with TestClient(app, base_url=settings.public_base_url, client=(ip, 1)) as other:
+            return other.post("/api/login", json={"username": "operator", "password": password}).status_code
+    # Many addresses failing used to fill the table and refuse every login with 429.
+    for n in range(10):
+        assert attempt(f"10.0.0.{n}") == 401
+    assert attempt("192.0.2.1", PASSWORD) == 200
+    # Each address is still limited to 10 attempts a minute while it stays active.
+    for _ in range(10):
+        assert attempt("10.0.1.1") == 401
+    assert attempt("10.0.1.1", PASSWORD) == 429
+    assert attempt("192.0.2.1", PASSWORD) == 200
+
+
 def test_body_size_limit_also_applies_to_chunked_bodies(setup):
     client, _, _, _, rid, (alice, _) = setup
     big = b"x" * 200_000

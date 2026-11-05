@@ -9,6 +9,7 @@ import shlex
 import sqlite3
 import sys
 import tempfile
+import time
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -76,6 +77,13 @@ def install(settings, destination=None):
 def end_session(db, session_id):
     with db.connect() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        # Show the participant as ended instead of connected; a later join or poll replaces this state.
+        ended = [r[0] for r in conn.execute('''SELECT s.agent_id FROM approval_sessions s JOIN agents a ON a.id=s.agent_id
+            WHERE s.harness='claude' AND s.session_id=? AND a.token_hash=s.agent_token_hash''', (session_id,))]
+        for agent_id in ended:
+            conn.execute('''INSERT INTO agent_delivery_status VALUES (?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET
+                mode=excluded.mode,state=excluded.state,last_error=NULL,updated_at=excluded.updated_at''',
+                (agent_id, 'claude', 'ended', None, time.time()))
         conn.execute('DELETE FROM approval_sessions WHERE harness=\'claude\' AND session_id=?', (session_id,))
         conn.execute('UPDATE approval_bridges SET expires_at=0 WHERE harness=\'claude\' AND session_id=?', (session_id,))
         conn.execute('''UPDATE approval_requests SET status='cancelled' WHERE bridge_id IN
