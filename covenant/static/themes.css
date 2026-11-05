@@ -22,10 +22,34 @@
   --bubble:#ffffff;--own-bubble:#dcefe5;--composer-bg:#ffffff;--code-bg:#e9f0ec;--primary-text:#ffffff;
   --sender-lightness:26%;--sender-background-lightness:92%;
 }
-:root[data-theme="light"] .status-badge.paused{color:#805700;background:#fff3cc;border-color:#d9bc70}
-:root[data-theme="light"] .connection-error{background:#fff0de;color:#7a4015}
-:root[data-theme="light"] .no-messages h2{color:var(--text)}
-:root[data-theme="light"] .no-messages>span{color:var(--accent)}
+:root[data-theme="graphite"]{
+  --bg:#17181b;--panel:#1e2024;--panel-light:#272a2f;--line:#393d44;--text:#e8e9ec;--muted:#a2a7b0;--accent:#8fb8ff;
+  --sidebar-bg:#1a1b1f;--chat-bg:#121315;--input-bg:#16171a;--hover:#2e3138;
+  --bubble:#222429;--own-bubble:#263248;--composer-bg:#1e2024;--code-bg:#141518;--primary-text:#0f1a2e;
+}
+:root[data-theme="plum"]{
+  --bg:#1d1622;--panel:#251c2b;--panel-light:#302436;--line:#4a3953;--text:#f1e8f4;--muted:#b8a6bf;--accent:#e7a6dc;
+  --sidebar-bg:#211927;--chat-bg:#18121c;--input-bg:#1d1622;--hover:#3a2c42;
+  --bubble:#2a2031;--own-bubble:#43294a;--composer-bg:#261d2c;--code-bg:#1a141e;--primary-text:#2e0f2a;
+}
+:root[data-theme="paper"]{
+  color-scheme:light;
+  --bg:#f7f3ec;--panel:#efe9de;--panel-light:#e7dfd1;--line:#d8cdbb;--text:#3a2f24;--muted:#6e6152;--accent:#a5532a;--danger:#b42336;
+  --sidebar-bg:#f1ece2;--chat-bg:#fbf8f3;--input-bg:#fffdf9;--hover:#e8e0d2;
+  --bubble:#fffdf9;--own-bubble:#f6e3d3;--composer-bg:#fffdf9;--code-bg:#efe8dc;--primary-text:#ffffff;
+  --sender-lightness:26%;--sender-background-lightness:92%;
+}
+:root[data-theme="sky"]{
+  color-scheme:light;
+  --bg:#f3f6fb;--panel:#e8eef7;--panel-light:#dde6f2;--line:#c9d5e6;--text:#1f2e45;--muted:#4f617b;--accent:#2459b8;--danger:#b42336;
+  --sidebar-bg:#edf2f9;--chat-bg:#f8fafd;--input-bg:#ffffff;--hover:#dce6f3;
+  --bubble:#ffffff;--own-bubble:#dbe7fa;--composer-bg:#ffffff;--code-bg:#e7edf6;--primary-text:#ffffff;
+  --sender-lightness:26%;--sender-background-lightness:92%;
+}
+:root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .status-badge.paused{color:#805700;background:#fff3cc;border-color:#d9bc70}
+:root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .connection-error{background:#fff0de;color:#7a4015}
+:root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .no-messages h2{color:var(--text)}
+:root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .no-messages>span{color:var(--accent)}
 .sidebar,.participants-panel,.panel-reopen-rail{background:var(--sidebar-bg)}
 .conversation{background:var(--chat-bg)}
 button:hover{background:var(--hover)}
