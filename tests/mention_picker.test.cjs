@@ -31,7 +31,8 @@ function setup() {
 
 test('filters recipients, excludes revoked agents, and Tab completes without sending',()=>{
   const f=setup(); f.type('@');
-  assert.equal(f.$('#mention-options').children.length,4);
+  // Two active agents and @everyone; the operator is never offered to themselves.
+  assert.equal(f.$('#mention-options').children.length,3);
   f.type('@DYN'); assert.equal(f.$('#mention-options').children.length,1);
   assert.equal(f.key('Tab').prevented,true);
   assert.equal(f.input.value,''); assert.equal(f.ctx.composeMessage(),'@dynamic_code_reviewer');
@@ -78,4 +79,15 @@ test('chip removal preserves the draft and a pasted duplicate does not duplicate
   assert.equal(f.ctx.composeMessage(),'@everyone\nDraft text');
   f.$('#recipient-chips').children[0].children[1].onclick();
   assert.equal(f.input.value,'Draft text');assert.equal(f.ctx.composeMessage(),'Draft text');
+});
+
+test('the operator is never suggested as a recipient of their own message',()=>{
+  const f=setup(); f.type('@');
+  assert.equal(f.$('#mention-options').children.length,3);
+  f.type('@ev'); assert.equal(f.$('#mention-options').children.length,1);
+  f.type('@op'); assert.equal(f.$('#mention-picker').hidden,true);
+  // Typing @operator by hand is not turned into a recipient chip either, and sending it is refused.
+  f.type('@operator hello'); assert.equal(f.ctx.composeMessage(),'@operator hello');
+  assert.deepEqual([...f.ctx.leadingTargets('@operator hello')],['operator']);
+  assert.deepEqual([...f.ctx.leadingTargets('@everyone ask @operator later')],['everyone']);
 });

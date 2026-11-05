@@ -806,7 +806,13 @@ async function renewAgent(agent) {
 const mentionState = {matches: [], index: 0, range: null};
 const composerRecipients = [];
 let recipientSignature = "", composerSizeSignature = "", composerFocused = false;
-function recipientHandles() {return [...new Set([...state.agents.filter(a => !a.revoked).map(a => a.handle).sort(), "everyone", "operator"])];}
+// The browser composer always sends as the operator, so the operator is never offered as a recipient.
+function recipientHandles() {return [...new Set([...state.agents.filter(a => !a.revoked).map(a => a.handle).sort(), "everyone"])];}
+function leadingTargets(text) {
+  const targets = []; let match, rest = text;
+  while ((match = /^@([a-z][a-z0-9_]{0,31})(?=\s|$)/.exec(rest))) {targets.push(match[1]); rest = rest.slice(match[0].length).trimStart();}
+  return targets;
+}
 function composeMessage() {return CovenantComposer.serialize(composerRecipients, $("#message-text").value).trim();}
 function resetComposer() {composerRecipients.length = 0; $("#message-text").value = ""; syncComposer(false);}
 function syncComposer(extract = true) {
@@ -924,6 +930,7 @@ $("#message-form").addEventListener("submit", async (event) => {
   const room = state.room, text = composeMessage(); if (!room || !$("#message-text").value.trim()) return;
   if (text.length > $("#message-text").maxLength) {$("#message-error").textContent = "Message and recipients exceed the 16,000-character limit."; return;}
   if (composerRecipients.some(handle => !recipientHandles().includes(handle))) {$("#message-error").textContent = "A selected recipient is no longer available. Remove them before sending."; return;}
+  if (leadingTargets(text).includes("operator")) {$("#message-error").textContent = "You are the operator, so @operator would send this to yourself. Choose an agent or @everyone."; return;}
   if (!composerRecipients.length && !/^@[a-z]/.test(text)) {$("#message-error").textContent = "Choose a recipient with @ before sending."; $("#add-recipient").focus(); return;}
   const replyTo = state.replyTo?.id || null;
   if (!state.pending || state.pending.text !== text || state.pending.room !== room.id || state.pending.reply_to !== replyTo) state.pending = {room: room.id, text, reply_to: replyTo, client_message_id: crypto.randomUUID()};
