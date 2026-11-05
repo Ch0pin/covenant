@@ -369,3 +369,18 @@ def test_claude_hook_outage_keeps_native_prompt_unless_session_is_linked(isolate
         out = run_hook_main(patch, capsys, settings.database, request)
     decision = json.loads(out.out)['hookSpecificOutput']['decision']
     assert decision['behavior'] == 'deny' and 'unavailable' in decision['message']
+
+
+def test_unlinked_claude_prompt_skips_web_and_mcp_libraries(isolated):
+    settings, db, sid, rid, aid, token = isolated
+    payload = json.dumps({'hook_event_name': 'PermissionRequest', 'session_id': str(uuid4()), 'tool_name': 'Bash'})
+    # Run the real hook entry point; it must answer nothing and leave the heavy libraries unloaded.
+    code = ('import runpy, sys\n'
+            'sys.argv = ["covenant.claude_approvals", "--database", sys.argv[1], "--port", "8765"]\n'
+            'runpy.run_module("covenant.claude_approvals", run_name="__main__")\n'
+            'heavy = sorted(m for m in ("fastapi", "mcp", "httpx", "covenant.approvals", "covenant.delivery") if m in sys.modules)\n'
+            'print("HEAVY", heavy, file=sys.stderr)\n')
+    result = subprocess.run([sys.executable, '-c', code, str(settings.database)], input=payload,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '' and 'HEAVY []' in result.stderr

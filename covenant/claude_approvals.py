@@ -13,10 +13,34 @@ import time
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from .approval_bridge import ApprovalClient, claude_decision, claude_hook
-from .approvals import close_bridge, create_bridge
-from .automatic_approvals import bind_session
 from .db import Database
+
+
+# This hook runs for every permission prompt on the machine, including Claude sessions that never
+# joined Covenant. Those only need SQLite, so the web and MCP libraries load only when a session uses them.
+def claude_decision(*args, **kwargs):
+    from .approval_bridge import claude_decision
+    return claude_decision(*args, **kwargs)
+
+
+async def claude_hook(*args, **kwargs):
+    from .approval_bridge import claude_hook
+    return await claude_hook(*args, **kwargs)
+
+
+def create_bridge(*args, **kwargs):
+    from .approvals import create_bridge
+    return create_bridge(*args, **kwargs)
+
+
+def close_bridge(*args, **kwargs):
+    from .approvals import close_bridge
+    return close_bridge(*args, **kwargs)
+
+
+def bind_session(*args, **kwargs):
+    from .automatic_approvals import bind_session
+    return bind_session(*args, **kwargs)
 
 
 def install(settings, destination=None):
@@ -100,7 +124,7 @@ def session_binding(db, session_id):
         return dict(row) if row else None
 
 
-async def dispatch(payload, db, port, api_factory=ApprovalClient, progress=None):
+async def dispatch(payload, db, port, api_factory=None, progress=None):
     progress = {} if progress is None else progress
     event = payload.get('hook_event_name')
     session_id = str(UUID(payload['session_id']))
@@ -138,6 +162,8 @@ async def dispatch(payload, db, port, api_factory=ApprovalClient, progress=None)
         return claude_decision(False, 'Invalid local Covenant approval address.')
     bid, token = create_bridge(db, binding['room_id'], binding['handle'], 'claude', session_id,
                                expected_token_hash=binding['agent_token_hash'])
+    if api_factory is None:
+        from .approval_bridge import ApprovalClient as api_factory
     api = api_factory(base, token)
     try:
         return await claude_hook(payload, api)
