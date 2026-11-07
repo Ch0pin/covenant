@@ -134,6 +134,11 @@
 }
 /* Swipe a message left or right (touch) to reply. */
 .message-bubble{touch-action:pan-y;transition:transform .18s ease-out}
+/* Swipe-to-reply works from anywhere on a message: sideways finger movement there is never a scroll.
+   Code blocks and tables keep sideways scrolling of their own for content wider than the screen. */
+.message,.message .markdown-content{touch-action:pan-y}
+.message .markdown-content pre,.message .markdown-content table{touch-action:auto}
+@media (max-width:900px),(hover:none){.message .markdown-content table{display:block;max-width:100%;overflow-x:auto}}
 .message-bubble.swiping{transition:none;-webkit-user-select:none;user-select:none}
 .message-bubble.swiping::after{content:"↩";position:absolute;top:50%;width:28px;height:28px;margin-top:-14px;display:grid;place-items:center;border-radius:50%;background:var(--panel-light);color:var(--accent);font-size:15px;line-height:1;pointer-events:none;opacity:var(--swipe-progress,0);transform:scale(calc(.6 + .4 * var(--swipe-progress,0)))}
 .message-bubble[data-swipe="right"]::after{left:-40px}
@@ -167,3 +172,11 @@
   background-image:linear-gradient(180deg,rgb(255 255 255/.55),rgb(255 255 255/0) 60%);
   box-shadow:inset 0 1px 0 rgb(255 255 255/.8);
   filter:drop-shadow(0 3px 4px rgb(0 0 0/.1)) drop-shadow(0 1px 1px rgb(0 0 0/.08))}
+
+/* Phones and touch screens: a filter makes the browser paint every bubble into its own off-screen image,
+   which stalls long chats there. A plain shadow looks nearly the same and costs almost nothing. */
+@media (max-width:900px),(hover:none){
+  .message-bubble,:root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .message-bubble{filter:none}
+  .message-bubble{box-shadow:inset 0 1px 0 rgb(255 255 255/.09),0 2px 4px rgb(0 0 0/.3)}
+  :root:is([data-theme="light"],[data-theme="paper"],[data-theme="sky"]) .message-bubble{box-shadow:inset 0 1px 0 rgb(255 255 255/.8),0 2px 4px rgb(0 0 0/.1)}
+}

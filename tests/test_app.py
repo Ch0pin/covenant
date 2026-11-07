@@ -597,3 +597,19 @@ def test_invitation_formats_and_renewal_keep_identity_and_authentication(setup):
         for endpoint in ("/join", "/messages", "/message-receipts", "/threads/", "/history", "/file-locks/acquire", "/file-locks/renew", "/file-locks/release"):
             assert f"https://chat.example.com/{rid}{endpoint}" in http
     assert created["token"] not in renewed["instructions"]
+
+
+def test_operator_messages_page_size(setup):
+    client, app, _, _, rid, _ = setup
+    with app.state.db.connect() as conn:
+        conn.executemany("INSERT INTO messages(room_id,sender,target,text,client_message_id,created_at) VALUES (?,?,?,?,?,?)",
+                         [(rid, "bob", "everyone", f"@everyone {i}", str(i), time.time()) for i in range(75)])
+    newest = client.get(f"/api/rooms/{rid}/messages?before=9223372036854775807&limit=30").json()
+    assert [m["text"] for m in newest["messages"]] == [f"@everyone {i}" for i in range(45, 75)] and newest["has_more"]
+    older = client.get(f"/api/rooms/{rid}/messages?before={newest['messages'][0]['id']}&limit=40").json()
+    assert [m["text"] for m in older["messages"]] == [f"@everyone {i}" for i in range(5, 45)] and older["has_more"]
+    rest = client.get(f"/api/rooms/{rid}/messages?before={older['messages'][0]['id']}&limit=40").json()
+    assert len(rest["messages"]) == 5 and not rest["has_more"]
+    assert len(client.get(f"/api/rooms/{rid}/messages?before=9223372036854775807").json()["messages"]) == 75
+    for bad in (0, 101):
+        assert client.get(f"/api/rooms/{rid}/messages?before=1&limit={bad}").status_code == 422

@@ -23,6 +23,22 @@ test('reply targets prefill the recipient, preserve drafts, and cancel without d
   assert.equal(f.state.replyTo,null);assert.equal(f.$('#reply-context').hidden,true);
   assert.equal(f.$('#message-text').value,'@operator Keep this draft');
 });
+test('cancelling a reply removes the recipient it filled in but keeps what the operator wrote',()=>{
+  // The recipient is still plain text in the box.
+  let f=fixture();f.ctx.setReplyTarget({id:2,sender:'sol'});
+  f.$('#cancel-reply').onclick();
+  assert.equal(f.$('#message-text').value,'');assert.equal(f.state.replyTo,null);
+  // The recipient became a chip, the operator typed a message and picked another recipient.
+  f=fixture();f.ctx.setReplyTarget({id:2,sender:'sol'});
+  f.ctx.composerRecipients.push('sol','everyone');f.$('#message-text').value='Please rerun the tests';
+  f.$('#cancel-reply').onclick();
+  assert.deepEqual([...f.ctx.composerRecipients],['everyone']);assert.equal(f.$('#message-text').value,'Please rerun the tests');
+  // The operator already removed the filled-in recipient; nothing else is touched.
+  f=fixture();f.ctx.setReplyTarget({id:2,sender:'sol'});
+  f.ctx.composerRecipients.push('everyone');f.$('#message-text').value='@solar notes';
+  f.$('#cancel-reply').onclick();
+  assert.deepEqual([...f.ctx.composerRecipients],['everyone']);assert.equal(f.$('#message-text').value,'@solar notes');
+});
 test('replies to own messages use their recipients, and archives prevent reply selection',()=>{
   const f=fixture();f.ctx.setReplyTarget({id:1,sender:'operator',targets:['sol']});
   assert.equal(f.$('#message-text').value,'@sol ');

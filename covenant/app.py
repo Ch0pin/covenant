@@ -264,18 +264,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "SELECT 1 FROM message_receipts WHERE message_id=? LIMIT 1", (row["id"],)).fetchone())
         return result
 
-    def envelope(conn, room_id, after=0, before=None):
+    def envelope(conn, room_id, after=0, before=None, limit=100):
         current = room(conn, room_id)
         if before is not None:
-            rows = list(conn.execute("SELECT * FROM messages WHERE room_id=? AND id<? ORDER BY id DESC LIMIT 101",
-                                     (room_id, before)))
-            more = len(rows) > 100
-            rows = list(reversed(rows[:100]))
+            rows = list(conn.execute("SELECT * FROM messages WHERE room_id=? AND id<? ORDER BY id DESC LIMIT ?",
+                                     (room_id, before, limit + 1)))
+            more = len(rows) > limit
+            rows = list(reversed(rows[:limit]))
         else:
-            rows = list(conn.execute("SELECT * FROM messages WHERE room_id=? AND id>? ORDER BY id LIMIT 101",
-                                     (room_id, after)))
-            more = len(rows) > 100
-            rows = rows[:100]
+            rows = list(conn.execute("SELECT * FROM messages WHERE room_id=? AND id>? ORDER BY id LIMIT ?",
+                                     (room_id, after, limit + 1)))
+            more = len(rows) > limit
+            rows = rows[:limit]
         return {"room": current, "room_status": current["status"],
                 "messages": [message_dict(r, conn) for r in rows],
                 "next_cursor": rows[-1]["id"] if rows else after,
@@ -550,10 +550,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/rooms/{room_id}/messages")
     async def operator_messages(room_id: UUID, request: Request, after: int = Query(0, ge=0),
-                                before: int | None = Query(None, ge=1)):
+                                before: int | None = Query(None, ge=1), limit: int = Query(100, ge=1, le=100)):
         operator(request)
         with db.connect() as conn:
-            result = envelope(conn, str(room_id), after, before)
+            result = envelope(conn, str(room_id), after, before, limit)
             receipts = receipt_rows(conn, str(room_id), [m["id"] for m in result["messages"] if m["sender"] == "operator"])
             for message in result["messages"]:
                 message["has_thread"] = bool(message.get("reply_to") or conn.execute(

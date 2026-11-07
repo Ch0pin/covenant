@@ -1,6 +1,8 @@
 "use strict";
 const $ = (selector) => document.querySelector(selector);
 const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, loading: false, pending: null, replyTo: null};
+// Messages shown when a chat opens, and per older page loaded while scrolling up.
+const FIRST_PAGE = 30, OLDER_PAGE = 40;
 $("#theme-select").value = document.documentElement.dataset.theme || "covenant";
 $("#theme-select").onchange = event => {event.target.value = CovenantTheme.apply(event.target.value);};
 window.addEventListener("storage", event => {if (event.key === "covenant-theme") $("#theme-select").value = CovenantTheme.apply(event.newValue, false);});
@@ -306,7 +308,7 @@ async function selectRoom(id) {
   hideMentions();
   closeRoomMenu();
   const generation = ++state.generation;
-  const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807`)]);
+  const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}`)]);
   if (generation !== state.generation || !state.me) return;
   clearReplyTarget();
   updateRoom(room); state.agents = room.agents; state.cursor = messages.next_cursor;
@@ -317,6 +319,7 @@ async function selectRoom(id) {
   appendMessages(messages.messages); renderAgents(); renderRooms();
   history.replaceState(null, "", `/${id}`); scrollBottom(); markCurrentRoomRead(); applyPanelWidths();
   globalThis.CovenantMobile?.roomSelected();
+  loadOlderNearTop();
 }
 let pendingScrollActivity = false;
 function updateScrollBottomButton() {
@@ -448,10 +451,21 @@ function setReplyTarget(message) {
     let recipient = message.sender === "operator" ? (message.targets || []).find(handle => handle !== "operator") || "everyone" : message.sender;
     if (!["operator", "everyone"].includes(recipient) && !state.agents.some(a => a.handle === recipient && !a.revoked)) recipient = "everyone";
     input.value = `@${recipient} `;
+    state.replyTo.addedRecipient = recipient;
   }
   syncComposer(); input.focus();
 }
-$("#cancel-reply").onclick = clearReplyTarget;
+// Cancelling a reply also removes the recipient the reply filled in; the operator's own text and recipients stay.
+function cancelReply() {
+  const added = state.replyTo?.addedRecipient, input = $("#message-text");
+  clearReplyTarget();
+  if (!added) return;
+  const index = composerRecipients.indexOf(added);
+  if (index >= 0) composerRecipients.splice(index, 1);
+  else if (input.value.startsWith(`@${added} `)) input.value = input.value.slice(added.length + 2);
+  state.pending = null; syncComposer(false); input.focus();
+}
+$("#cancel-reply").onclick = cancelReply;
 async function loadThread(details) {
   const view = threadViews.get(details);
   if (!view || view.busy || !details.open || view.generation !== state.generation) return;
@@ -550,7 +564,7 @@ function renderMessage(message, inThread = false) {
   reply.disabled = state.room?.status === "archived";
   reply.setAttribute("aria-label", `Reply to message #${message.id} from ${message.sender}`);
   reply.onclick = () => setReplyTarget(message); actions.append(reply); main.append(actions);
-  globalThis.CovenantSwipeReply?.attach(bubble, () => setReplyTarget(message));
+  globalThis.CovenantSwipeReply?.attach(bubble, () => setReplyTarget(message), article);
   if (!inThread) {
     const details = element("details", "message-thread"), summary = element("summary", "thread-summary", "View thread");
     const body = element("div", "thread-body"), error = element("p", "error thread-error");
@@ -583,18 +597,29 @@ function appendMessages(messages) {
     updateScrollBottomButton();
   }
 }
-$("#load-older").onclick = async () => {
+// Long chats open with only their newest messages; older pages load as the operator scrolls up,
+// so phones never have to build and paint the whole history at once.
+let olderLoading = null;
+async function loadOlder() {
   const generation = state.generation, room = state.room;
-  if (!room) return;
-  try {const result = await api(`/api/rooms/${room.id}/messages?before=${state.first}`); if (generation !== state.generation) return;
+  if (!room || olderLoading === generation || $("#load-older").hidden) return;
+  olderLoading = generation; $("#load-older").disabled = true;
+  try {const result = await api(`/api/rooms/${room.id}/messages?before=${state.first}&limit=${OLDER_PAGE}`); if (generation !== state.generation) return;
     const scroll = $("#message-scroll"), oldHeight = scroll.scrollHeight, fragment = document.createDocumentFragment();
     result.messages.forEach(m => fragment.append(renderMessage(m))); $("#messages").prepend(fragment);
     refreshThreadControls();
     groupMessages($("#messages"));
     state.first = result.messages[0]?.id || state.first; $("#load-older").hidden = !result.has_more;
     scroll.scrollTop += scroll.scrollHeight - oldHeight;
-  } catch(error) {toast(error.message);}
-};
+  } catch(error) {if (generation === state.generation) toast(error.message); return;}
+  finally {if (olderLoading === generation) {olderLoading = null; $("#load-older").disabled = false;}}
+  if (generation === state.generation) loadOlderNearTop();
+}
+function loadOlderNearTop() {
+  if (state.room && !$("#load-older").hidden && $("#message-scroll").scrollTop < 600) loadOlder();
+}
+$("#load-older").onclick = () => loadOlder();
+$("#message-scroll").addEventListener("scroll", loadOlderNearTop, {passive:true});
 function seenText(agent) {
   if (agent.revoked) return "Access revoked";
   if (!agent.joined_at) return "Waiting to join";
