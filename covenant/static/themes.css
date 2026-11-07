@@ -209,3 +209,6 @@ dialog{background:var(--panel);border-color:var(--line)}
 .participant-status-dot[data-level="warning"]{background:#d98a12}
 .participant-status-dot[data-level="error"]{background:#df4a55}
 .participant-info .participant-status{white-space:normal;overflow-wrap:anywhere;line-height:1.45;margin-top:3px;color:var(--text)}
+.participant-info .poke-result{color:var(--muted);line-height:1.45}
+.participant-info .poke-result[data-level="ok"]{color:#16875d}
+.participant-info .poke-result[data-level="warning"]{color:#d98a12}

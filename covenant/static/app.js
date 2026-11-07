@@ -696,9 +696,14 @@ function renderAgents() {
     approval.title = "Codex connects through its registered session. Claude needs the one-time setup command and a room join.";
     info.append(approval);
     globalThis.CovenantApprovalConnections?.paint(approval);
+    const pokeLine = globalThis.CovenantPoke?.line(agent);
+    if (pokeLine) info.append(pokeLine);
     row.append(senderAvatar(agent.handle), info); list.append(row);
     if (state.room.status !== "archived") {
       const controls = element("div", "participant-controls");
+      if (!agent.revoked && globalThis.CovenantPoke) {
+        const poke = globalThis.CovenantPoke.button(agent); controls.append(poke); globalThis.CovenantPoke.paint(agent, pokeLine, poke);
+      }
       const renew = element("button", "", "Renew token"); renew.setAttribute("aria-label", `Renew token for ${agent.handle}`);
       renew.onclick = () => renewAgent(agent); controls.append(renew);
       if (!agent.revoked) {const revoke = element("button", "", "Revoke"); revoke.setAttribute("aria-label", `Revoke ${agent.handle}`); revoke.onclick = () => revokeAgent(agent); controls.append(revoke);}
