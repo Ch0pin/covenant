@@ -5,7 +5,9 @@
   .workspace,.workspace.sidebar-collapsed{display:flex;flex-direction:column;height:var(--mobile-height,100dvh);width:100%;grid-template-columns:none;grid-template-rows:none}
   .main{width:100%;flex:1;min-height:0}
   .mobile-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:56px;flex-shrink:0;padding:env(safe-area-inset-top,0px) max(8px,env(safe-area-inset-right,0px)) 0 max(8px,env(safe-area-inset-left,0px));background:var(--sidebar-bg);border-bottom:1px solid var(--line)}
-  .mobile-toolbar>strong{font-size:14px;letter-spacing:-.03em}
+  .mobile-room{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+  .mobile-room strong{font-size:14px;letter-spacing:-.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .mobile-room .status-badge{flex-shrink:0}.mobile-toolbar button{flex-shrink:0}
   .mobile-toolbar button{display:flex;align-items:center;justify-content:center;gap:6px;border:0;padding:8px;min-height:44px;font-size:12px}
   .mobile-toolbar svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round}
   .mobile-count{background:var(--accent);color:var(--primary-text);border-radius:12px;min-width:20px;padding:2px 5px;font-size:11px}
@@ -82,7 +84,7 @@
   .login-card button{min-height:44px}
 }
 @media(max-width:380px){
-  .mobile-toolbar>strong{font-size:12px}.mobile-toolbar button{font-size:11px;padding:6px}
+  .mobile-room strong{font-size:12px}.mobile-toolbar button{font-size:11px;padding:6px}
   .participants-title{flex-wrap:wrap}
 }
 @media(max-width:900px) and (max-height:500px){

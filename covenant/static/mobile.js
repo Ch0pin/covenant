@@ -21,6 +21,11 @@
     scrim.hidden = !active;
     workspace.dataset.mobilePanel = active || "";
     triggers.participants.disabled = !state.room;
+    // The room header is hidden on phones, so the top bar shows the open chat's name and status.
+    const room = state.room, title = $("#mobile-room-title"), badge = $("#mobile-room-status");
+    title.textContent = room?.title || "Covenant"; title.title = room?.title || "";
+    badge.hidden = !room;
+    if (room) {badge.textContent = room.status; badge.className = `status-badge ${room.status}`;}
     for (const [name, panel] of Object.entries(panels)) {
       triggers[name].setAttribute("aria-expanded", String(active === name));
       if (media.matches) {

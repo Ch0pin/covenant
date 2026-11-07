@@ -128,7 +128,6 @@
 }
 @media(max-width:900px){
   .workspace-settings-toggle{min-height:44px;font-size:13px}
-  .mobile-toolbar>strong{margin-right:auto}
   .workspace-settings-menu .theme-control select{min-height:44px;font-size:16px}
   .workspace-settings-menu .notifications-toggle{min-height:44px;font-size:13px}
 }
