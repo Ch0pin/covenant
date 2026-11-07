@@ -56,11 +56,11 @@ test('the result shows how long the agent took to acknowledge or answer',async()
  assert.equal(f.button().disabled,false);
  f.receipts[77]=[{handle:'sol',queued_at:1000,delivered_at:1002,acknowledged_at:1008,answered_at:1021}];
  await f.tick();
- assert.equal(f.line().textContent,'Poke acknowledged in 8 s','finished pokes stop polling receipts');
+ assert.equal(f.line().textContent,'Poke answered in 21 s','a reply after the acknowledgement upgrades the result');
  f.context.renderAgents();
- assert.equal(f.line().textContent,'Poke acknowledged in 8 s','re-rendering the list keeps the result');
+ assert.equal(f.line().textContent,'Poke answered in 21 s','re-rendering the list keeps the result');
 });
-test('silence for a minute is reported as a warning and the button comes back',async()=>{
+test('silence for a minute is reported as a warning, the button comes back, and a late answer still shows',async()=>{
  const f=fixture();await f.button().onclick();
  f.advance(59);await f.tick();
  assert.equal(f.button().disabled,true);
@@ -68,9 +68,20 @@ test('silence for a minute is reported as a warning and the button comes back',a
  assert.equal(f.line().textContent,'No response to poke after 1 min');
  assert.equal(f.line().dataset.level,'warning');
  assert.equal(f.button().disabled,false);
- f.receipts[77]=[{handle:'sol',queued_at:1000,delivered_at:1002,acknowledged_at:null,answered_at:1090}];
  f.advance(30);await f.tick();
- assert.equal(f.line().textContent,'No response to poke after 1 min','late answers are not fetched once the poke timed out');
+ assert.equal(f.line().textContent,'No response to poke after 1 min 30 s','the warning keeps counting while it watches');
+ f.receipts[77]=[{handle:'sol',queued_at:1000,delivered_at:1002,acknowledged_at:null,answered_at:1090}];
+ await f.tick();
+ assert.equal(f.line().textContent,'Poke answered in 1 min 30 s');
+ assert.equal(f.line().dataset.level,'ok');
+});
+test('watching stops half an hour after the poke',async()=>{
+ const f=fixture();await f.button().onclick();
+ f.advance(30*60);await f.tick();
+ assert.equal(f.line().textContent,'No response to poke after 30 min');
+ f.receipts[77]=[{handle:'sol',queued_at:1000,delivered_at:1002,acknowledged_at:2900,answered_at:null}];
+ f.advance(600);await f.tick();
+ assert.equal(f.line().textContent,'No response to poke after 30 min','receipts are no longer fetched after the window');
 });
 test('results belong to one chat and disappear on logout',async()=>{
  const f=fixture();await f.button().onclick();

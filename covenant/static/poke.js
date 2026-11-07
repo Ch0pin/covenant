@@ -2,7 +2,8 @@
 // Poke an agent: send it a short tracked message and show whether it acknowledges or answers.
 // The poke is an ordinary operator message, so it uses the delivery receipts agents already know.
 (() => {
-  const WAIT_SECONDS = 60;
+  // A poke warns after WAIT_SECONDS without a response, and keeps watching for a late one until FOLLOW_SECONDS.
+  const WAIT_SECONDS = 60, FOLLOW_SECONDS = 30 * 60;
   let pokes = {}, busy = false;
   function pokeText(handle) {return `@${handle} Poke from the operator: are you still there? Acknowledge or reply briefly.`;}
   function seconds(value) {
@@ -13,10 +14,12 @@
     const receipt = poke.receipt, sent = receipt?.queued_at ?? poke.sentAt;
     if (receipt?.answered_at != null) return {text: `Poke answered in ${seconds(receipt.answered_at - sent)}`, level: "ok", done: true};
     if (receipt?.acknowledged_at != null) return {text: `Poke acknowledged in ${seconds(receipt.acknowledged_at - sent)}`, level: "ok", done: true};
-    const elapsed = now - poke.sentAt;
-    if (elapsed >= WAIT_SECONDS) return {text: `No response to poke after ${seconds(WAIT_SECONDS)}`, level: "warning", done: true};
-    return {text: `Poked · waiting ${seconds(elapsed)}`, level: "", done: false};
+    const elapsed = Math.min(now - poke.sentAt, FOLLOW_SECONDS);
+    if (elapsed >= WAIT_SECONDS) return {text: `No response to poke after ${seconds(elapsed)}`, level: "warning", done: true, watching: elapsed < FOLLOW_SECONDS};
+    return {text: `Poked · waiting ${seconds(elapsed)}`, level: "", done: false, watching: true};
   }
+  // Keep fetching receipts until the poke is answered or the follow-up window closes, so late replies still show.
+  function watching(poke) {const shown = describe(poke); return shown.watching || (shown.done && poke.receipt?.answered_at == null && Date.now() / 1000 - poke.sentAt < FOLLOW_SECONDS);}
   function paint(agent, line, button) {
     const poke = pokes[agent.id], shown = poke && poke.room === state.room?.id ? describe(poke) : null;
     line.hidden = !shown;
@@ -48,7 +51,7 @@
   async function refresh() {
     if (!state.me) {pokes = {}; repaint(); return;}
     const room = state.room?.id;
-    const waiting = Object.values(pokes).filter(poke => poke.room === room && !describe(poke).done);
+    const waiting = Object.values(pokes).filter(poke => poke.room === room && watching(poke));
     if (!room || !waiting.length || busy) {repaint(); return;}
     busy = true;
     try {
@@ -69,7 +72,7 @@
     const result = element("small", "poke-result"); result.dataset.agentId = agent.id; result.hidden = true;
     return result;
   }
-  globalThis.CovenantPoke = {button, line, paint, send, refresh, describe, pokeText, WAIT_SECONDS};
+  globalThis.CovenantPoke = {button, line, paint, send, refresh, describe, pokeText, WAIT_SECONDS, FOLLOW_SECONDS};
   window.addEventListener("covenant-login-change", refresh);
   setInterval(refresh, 2000);
 })();
