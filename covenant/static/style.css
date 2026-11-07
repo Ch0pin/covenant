@@ -55,7 +55,7 @@
 .room-item.selected{background:#203633;border-color:#a1e6c51c}
 .room-item.selected::before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:3px;border-radius:3px;background:var(--accent)}
 .room-item-meta{display:flex;align-items:center;gap:7px;flex-shrink:0}
-.room-unread{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0}
+.room-unread{width:7px;height:7px;border-radius:50%;background:var(--accent);flex-shrink:0}.room-unread-other{background:var(--muted);opacity:.6}
 .room-inline-actions{position:absolute;right:8px;bottom:7px;display:flex;gap:2px;opacity:0;pointer-events:none;background:#18282b;border-radius:6px}
 .room-inline-action{display:grid;place-items:center;width:26px;height:26px;padding:5px;border:0;border-radius:5px;color:var(--muted)}
 .room-inline-action svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}

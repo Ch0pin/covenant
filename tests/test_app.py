@@ -566,6 +566,24 @@ def test_room_list_unread_cursor_tracks_agent_messages_only(setup):
     assert client.get("/api/rooms").json()["rooms"][0]["latest_agent_message_id"] == second
 
 
+def test_room_list_tracks_latest_message_for_the_operator(setup):
+    client, _, _, headers, rid, (alice, bob) = setup
+    room = lambda: client.get("/api/rooms").json()["rooms"][0]
+    assert room()["latest_operator_message_id"] == 0
+    agents_only = send(client, rid, alice, "@bob see the @operator notes later").json()["id"]
+    assert room()["latest_agent_message_id"] == agents_only
+    assert room()["latest_operator_message_id"] == 0
+    direct = send(client, rid, alice, "@operator please review").json()["id"]
+    assert room()["latest_operator_message_id"] == direct
+    client.post(f"/api/rooms/{rid}/messages", headers=headers,
+                json={"text": "@everyone thanks", "client_message_id": str(uuid4())})
+    send(client, rid, bob, "@alice working on it")
+    assert room()["latest_operator_message_id"] == direct
+    broadcast = send(client, rid, bob, "@alice @everyone done").json()["id"]
+    assert room()["latest_operator_message_id"] == broadcast
+    assert room()["latest_agent_message_id"] == broadcast
+
+
 def test_invitation_formats_and_renewal_keep_identity_and_authentication(setup):
     client, app, settings, headers, rid, invitations = setup
     html = client.get("/").text

@@ -22,6 +22,16 @@ test('unread markers advance only when the current chat is visible and scrolled 
   const reloaded=fixture(f.stored);assert.equal(reloaded.ctx.roomHasUnread(room),false);
   reloaded.state.me.username='another';reloaded.ctx.loadRoomReads();assert.equal(reloaded.ctx.roomHasUnread(room),true);
 });
+test('the stronger marker is reserved for unread messages addressed to the operator',()=>{
+  const f=fixture();
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:12,latest_operator_message_id:0}),false);
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:12,latest_operator_message_id:12}),true);
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:12}),false);
+  f.ctx.markCurrentRoomRead();
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:12,latest_operator_message_id:12}),false);
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:13,latest_operator_message_id:13}),true);
+  assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:13,latest_operator_message_id:5}),false);
+});
 test('invalid saved cursors are ignored and read positions never move backwards',()=>{
   const f=fixture(new Map([['covenant-read:operator','{"room":-1,"other":"99"}']]));
   assert.equal(f.ctx.roomHasUnread({id:'other',latest_agent_message_id:1}),true);

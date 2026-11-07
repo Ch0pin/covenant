@@ -154,6 +154,8 @@ function loadRoomReads() {
   } catch {}
 }
 function roomHasUnread(room) {return (room.latest_agent_message_id || 0) > (roomReadCursors[room.id] || 0);}
+// True when an unread agent message is addressed to the operator (or everyone); other unread messages get a quieter dot.
+function roomHasUnreadForOperator(room) {return (room.latest_operator_message_id || 0) > (roomReadCursors[room.id] || 0);}
 function markCurrentRoomRead() {
   const scroll = $("#message-scroll");
   if (!state.me || !state.room || document.visibilityState !== "visible" || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight >= 100) return;
@@ -241,7 +243,7 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 $("#logout").addEventListener("click", async () => {try {await api("/api/logout", {method: "POST"}); showLogin(); history.replaceState(null, "", "/");} catch(error) {toast(error.message);}});
 function renderRooms() {
-  const signature = JSON.stringify([state.archived, state.room?.id, state.rooms.map(room => [room, roomHasUnread(room)])]);
+  const signature = JSON.stringify([state.archived, state.room?.id, state.rooms.map(room => [room, roomHasUnread(room), roomHasUnreadForOperator(room)])]);
   if (signature === roomListSignature) return;
   roomListSignature = signature;
   const focused = document.activeElement, focusRoom = focused?.closest(".room-row")?.dataset.roomId, focusAction = focused?.dataset.roomAction;
@@ -263,7 +265,10 @@ function renderRooms() {
     const meta = element("span", "room-item-meta"); meta.append(element("span", "room-item-time", timeText(room.updated_at)));
     const approvalDot = element("span", "room-approval-dot"); approvalDot.hidden = true;
     approvalDot.setAttribute("aria-hidden", "true"); meta.append(approvalDot);
-    if (roomHasUnread(room)) {const dot = element("span", "room-unread"); dot.title = "Unread agent messages"; dot.setAttribute("aria-hidden", "true"); meta.append(dot);}
+    if (roomHasUnread(room)) {
+      const forOperator = roomHasUnreadForOperator(room), dot = element("span", forOperator ? "room-unread" : "room-unread room-unread-other");
+      dot.title = forOperator ? "Unread messages for you" : "Unread agent messages"; dot.setAttribute("aria-hidden", "true"); meta.append(dot);
+    }
     line.append(element("strong", "", room.title), meta);
     content.append(line, element("small", "", room.preview || (room.status === "archived" ? "Archived conversation" : room.status === "paused" ? "Paused" : "Ready for your agents")));
     button.append(content); button.addEventListener("click", () => selectRoom(room.id).catch(e => toast(e.message))); row.append(button);

@@ -427,6 +427,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "next_cursor": rows[min(len(rows), 100) - 1]["id"] if rows else after,
                     "has_more": len(rows) > 100}
 
+    def latest_operator_message_id(conn, room_id):
+        # Newest agent message addressed to @operator or @everyone; LIKE only narrows the rows to parse.
+        for row in conn.execute("""SELECT id, text FROM messages WHERE room_id=? AND sender!='operator'
+                AND (text LIKE '%@operator%' OR text LIKE '%@everyone%') ORDER BY id DESC""", (room_id,)):
+            if {"operator", "everyone"} & set(message_targets(row["text"])[0]):
+                return row["id"]
+        return 0
+
     @app.get("/api/rooms")
     async def list_rooms(request: Request, archived: bool = False):
         operator(request)
@@ -435,7 +443,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (SELECT COUNT(*) FROM agents WHERE room_id=r.id AND revoked=0) AS agent_count,
                 (SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=r.id AND sender!='operator') AS latest_agent_message_id
                 FROM rooms r WHERE (status='archived')=? ORDER BY updated_at DESC""", (archived,))
-            return {"rooms": [dict(r) for r in rows]}
+            rooms = [dict(r) for r in rows]
+            for room in rooms:
+                room["latest_operator_message_id"] = latest_operator_message_id(conn, room["id"])
+            return {"rooms": rooms}
 
     @app.post("/api/rooms", status_code=201)
     async def new_room(body: NewRoom, request: Request):
