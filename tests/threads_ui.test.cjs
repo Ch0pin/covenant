@@ -46,3 +46,14 @@ test('replies to own messages use their recipients, and archives prevent reply s
   f.ctx.setReplyTarget({id:2,sender:'sol'});
   assert.equal(f.state.replyTo,null);assert.equal(f.$('#message-text').value,'');
 });
+
+test('reply adds its recipient to an existing draft and preserves existing recipients',()=>{
+ const f=fixture();f.$('#message-text').value='Keep this draft';f.ctx.composerRecipients.push('everyone');
+ f.ctx.setReplyTarget({id:9,sender:'sol'});
+ assert.equal(f.$('#message-text').value,'Keep this draft');
+ assert.deepEqual([...f.ctx.composerRecipients],['everyone','sol']);
+ assert.equal(f.state.replyTo.id,9);assert.equal(f.$('#message-text').focused,true);
+ f.$('#cancel-reply').onclick();
+ assert.deepEqual([...f.ctx.composerRecipients],['everyone']);
+ assert.equal(f.$('#message-text').value,'Keep this draft');
+});

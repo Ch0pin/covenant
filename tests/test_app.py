@@ -631,3 +631,20 @@ def test_operator_messages_page_size(setup):
     assert len(client.get(f"/api/rooms/{rid}/messages?before=9223372036854775807").json()["messages"]) == 75
     for bad in (0, 101):
         assert client.get(f"/api/rooms/{rid}/messages?before=1&limit={bad}").status_code == 422
+
+
+def test_room_opens_at_first_unread_operator_message_even_outside_latest_page(setup):
+    client, app, settings, headers, rid, (alice, bob) = setup
+    seen = send(client, rid, alice, '@operator Already read').json()['id']
+    send(client, rid, alice, '@bob Body mentions @operator but addresses Bob')
+    target = send(client, rid, bob, '@everyone First unread announcement').json()['id']
+    send(client, rid, alice, '@operator Later direct message')
+    for i in range(35): send(client, rid, alice, '@bob Later chatter '+str(i))
+    url = f'/api/rooms/{rid}/messages?before=9223372036854775807&limit=30'
+    result = client.get(url+f'&focus_after={seen}').json()
+    assert result['focus_id'] == target and result['messages'][0]['id'] == target
+    assert len(result['messages']) == 30 and result['has_older'] and result['has_more']
+    latest = client.get(url).json()
+    result = client.get(url+f'&focus_after={latest["next_cursor"]}').json()
+    assert result['focus_id'] is None
+    assert result['messages'] == latest['messages']

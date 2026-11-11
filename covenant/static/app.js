@@ -313,19 +313,37 @@ async function selectRoom(id) {
   hideMentions();
   closeRoomMenu();
   const generation = ++state.generation;
-  const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}`)]);
+  const readCursor = roomReadCursors[id] || 0;
+  const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}&focus_after=${readCursor}`)]);
   if (generation !== state.generation || !state.me) return;
   clearReplyTarget();
   updateRoom(room); state.agents = room.agents; state.cursor = messages.next_cursor;
   state.first = messages.messages[0]?.id || 0; state.pending = null;
   $("#messages").replaceChildren(); resetComposer(); $("#message-error").textContent = "";
   $("#empty-state").hidden = true; $("#conversation").hidden = false;
-  $("#load-older").hidden = !messages.has_more;
+  $("#load-older").hidden = !(messages.has_older ?? messages.has_more);
   appendMessages(messages.messages); renderAgents(); renderRooms();
-  history.replaceState(null, "", `/${id}`); scrollBottom(); markCurrentRoomRead(); applyPanelWidths();
+  history.replaceState(null, "", `/${id}`); applyPanelWidths();
   globalThis.CovenantMobile?.roomSelected();
+  const target = messages.focus_id ? $("#messages").querySelector(`:scope > [data-id="${messages.focus_id}"]`) : null;
+  if (target) {
+    const box = $("#message-scroll");
+    box.scrollTop += target.getBoundingClientRect().top - box.getBoundingClientRect().top - 24;
+    target.classList.add("message-unread-focus");
+    target.setAttribute("tabindex", "-1"); target.focus({preventScroll: true});
+    updateScrollBottomButton();
+  } else scrollBottom();
+  markCurrentRoomRead();
   loadOlderNearTop();
 }
+function clearMessageHighlight() {
+  for (const message of $("#messages").querySelectorAll(".message-unread-focus")) {
+    message.classList.remove("message-unread-focus");
+    message.removeAttribute("tabindex");
+    if (document.activeElement === message) message.blur();
+  }
+}
+$(".chat-column").addEventListener("click", clearMessageHighlight);
 let pendingScrollActivity = false;
 function updateScrollBottomButton() {
   const box = $("#message-scroll");
@@ -452,11 +470,17 @@ function setReplyTarget(message) {
   $("#reply-label").textContent = `Replying to ${message.sender} · #${message.id}`;
   $("#reply-context").hidden = false;
   const input = $("#message-text");
+  let recipient = message.sender === "operator" ? (message.targets || []).find(handle => handle !== "operator") || "everyone" : message.sender;
+  if (!["operator", "everyone"].includes(recipient) && !state.agents.some(a => a.handle === recipient && !a.revoked)) recipient = "everyone";
   if (!input.value.trim() && !composerRecipients.length) {
-    let recipient = message.sender === "operator" ? (message.targets || []).find(handle => handle !== "operator") || "everyone" : message.sender;
-    if (!["operator", "everyone"].includes(recipient) && !state.agents.some(a => a.handle === recipient && !a.revoked)) recipient = "everyone";
     input.value = `@${recipient} `;
     state.replyTo.addedRecipient = recipient;
+  } else {
+    syncComposer();
+    if (!composerRecipients.includes(recipient)) {
+      composerRecipients.push(recipient);
+      state.replyTo.addedRecipient = recipient;
+    }
   }
   syncComposer(); input.focus();
 }
@@ -568,6 +592,10 @@ function renderMessage(message, inThread = false) {
   const reply = element("button", "reply-button", "Reply"); reply.type = "button";
   reply.disabled = state.room?.status === "archived";
   reply.setAttribute("aria-label", `Reply to message #${message.id} from ${message.sender}`);
+  // Keep the focused composer from collapsing and moving the Reply button before click.
+  reply.addEventListener("pointerdown", event => {
+    if (event.button === 0 && document.activeElement === $("#message-text")) event.preventDefault();
+  });
   reply.onclick = () => setReplyTarget(message); actions.append(reply); main.append(actions);
   globalThis.CovenantSwipeReply?.attach(bubble, () => setReplyTarget(message), article);
   if (!inThread) {

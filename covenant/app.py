@@ -442,7 +442,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows = conn.execute("""SELECT r.*, (SELECT text FROM messages WHERE room_id=r.id ORDER BY id DESC LIMIT 1) AS preview,
                 (SELECT COUNT(*) FROM agents WHERE room_id=r.id AND revoked=0) AS agent_count,
                 (SELECT COALESCE(MAX(id),0) FROM messages WHERE room_id=r.id AND sender!='operator') AS latest_agent_message_id
-                FROM rooms r WHERE (status='archived')=? ORDER BY updated_at DESC""", (archived,))
+                FROM rooms r WHERE (status='archived')=? ORDER BY r.created_at DESC,r.id ASC""", (archived,))
             rooms = [dict(r) for r in rows]
             for room in rooms:
                 room["latest_operator_message_id"] = latest_operator_message_id(conn, room["id"])
@@ -561,10 +561,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/rooms/{room_id}/messages")
     async def operator_messages(room_id: UUID, request: Request, after: int = Query(0, ge=0),
-                                before: int | None = Query(None, ge=1), limit: int = Query(100, ge=1, le=100)):
+                                before: int | None = Query(None, ge=1), limit: int = Query(100, ge=1, le=100),
+                                focus_after: int | None = Query(None, ge=0, le=2**63-1)):
         operator(request)
         with db.connect() as conn:
+            focus_id = None
+            if focus_after is not None:
+                for row in conn.execute("""SELECT id,text FROM messages WHERE room_id=? AND id>? AND sender!='operator'
+                        AND (text LIKE '%@operator%' OR text LIKE '%@everyone%') ORDER BY id""", (str(room_id), focus_after)):
+                    if {"operator", "everyone"} & set(message_targets(row["text"])[0]):
+                        focus_id = row["id"]
+                        after, before = focus_id - 1, None
+                        break
             result = envelope(conn, str(room_id), after, before, limit)
+            if focus_after is not None:
+                result["focus_id"] = focus_id
+                first = result["messages"][0]["id"] if result["messages"] else 0
+                result["has_older"] = bool(conn.execute("SELECT 1 FROM messages WHERE room_id=? AND id<? LIMIT 1", (str(room_id), first)).fetchone())
             receipts = receipt_rows(conn, str(room_id), [m["id"] for m in result["messages"] if m["sender"] == "operator"])
             for message in result["messages"]:
                 message["has_thread"] = bool(message.get("reply_to") or conn.execute(
