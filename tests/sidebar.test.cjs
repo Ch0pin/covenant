@@ -38,3 +38,23 @@ test('invalid saved cursors are ignored and read positions never move backwards'
   f.ctx.markCurrentRoomRead();f.state.cursor=2;f.ctx.markCurrentRoomRead();
   assert.equal(JSON.parse(f.stored.get('covenant-read:operator')).room,12);
 });
+
+function roomSelectionFixture(){
+ const state={me:{username:'operator'},archived:false,room:{id:'active',status:'active'},rooms:[],generation:1};
+ let rows=[],cleared=0;
+ const ctx=vm.createContext({state,api:async()=>({rooms:rows}),renderRooms(){},closeRoomMenu(){},
+  clearConversation(){cleared++;state.room=null;state.generation++;},
+  $:()=>({classList:{toggle(){}},setAttribute(){}})});
+ vm.runInContext(source.slice(source.indexOf('async function refreshRooms()'),source.indexOf('$("#active-tab").onclick')),ctx);
+ return {ctx,state,setRows(value){rows=value;},get cleared(){return cleared;}};
+}
+test('switching filters clears an invisible selection and invalidates old room loads',async()=>{
+ const f=roomSelectionFixture();f.setRows([{id:'archive',status:'archived'}]);
+ await f.ctx.setFilter(true);
+ assert.equal(f.state.room,null);assert.equal(f.cleared,1);assert.ok(f.state.generation>1);
+});
+test('room refresh clears a removed room and preserves a room moved into the selected filter',async()=>{
+ const f=roomSelectionFixture();f.setRows([]);await f.ctx.refreshRooms();assert.equal(f.state.room,null);
+ f.state.room={id:'archive',status:'archived'};f.setRows([f.state.room]);await f.ctx.setFilter(true);
+ assert.equal(f.state.room.id,'archive');assert.equal(f.cleared,1);
+});

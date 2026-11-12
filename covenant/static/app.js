@@ -2,7 +2,7 @@
 const $ = (selector) => document.querySelector(selector);
 const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, loading: false, pending: null, replyTo: null};
 // Messages shown when a chat opens, and per older page loaded while scrolling up.
-const FIRST_PAGE = 30, OLDER_PAGE = 40;
+const FIRST_PAGE = 10, OLDER_PAGE = 20;
 $("#theme-select").value = document.documentElement.dataset.theme || "covenant";
 $("#theme-select").onchange = event => {event.target.value = CovenantTheme.apply(event.target.value);};
 window.addEventListener("storage", event => {if (event.key === "covenant-theme") $("#theme-select").value = CovenantTheme.apply(event.newValue, false);});
@@ -217,7 +217,7 @@ async function enterWorkspace() {
   $("#operator-name").textContent = me.username;
   document.querySelectorAll(".operator-avatar").forEach(node => node.replaceWith(senderAvatar("operator")));
   $("#login-screen").hidden = true; $("#workspace").hidden = false;
-  $("#empty-state").hidden = false; $("#conversation").hidden = true;
+  $("#empty-state").hidden = true; $("#conversation").hidden = true;
   await refreshRooms();
   const requested = location.pathname.slice(1);
   if (/^[0-9a-f-]{36}$/.test(requested)) {
@@ -286,8 +286,27 @@ function renderRooms() {
   }
   if (focusRoom && focusAction) list.querySelector(`.room-row[data-room-id="${focusRoom}"] [data-room-action="${focusAction}"]`)?.focus({preventScroll:true});
 }
-async function refreshRooms() {const archived = state.archived; const result = await api(`/api/rooms?archived=${archived}`); if (archived !== state.archived || !state.me) return; state.rooms = result.rooms; renderRooms();}
-async function setFilter(archived) {closeRoomMenu(); state.archived = archived; $("#active-tab").classList.toggle("selected", !archived); $("#archived-tab").classList.toggle("selected", archived); $("#active-tab").setAttribute("aria-pressed", String(!archived)); $("#archived-tab").setAttribute("aria-pressed", String(archived)); await refreshRooms();}
+async function refreshRooms() {
+  const archived = state.archived;
+  const result = await api(`/api/rooms?archived=${archived}`);
+  if (archived !== state.archived || !state.me) return;
+  state.rooms = result.rooms;
+  if (state.room && !state.rooms.some(room => room.id === state.room.id)) clearConversation();
+  renderRooms();
+}
+async function setFilter(archived) {
+  closeRoomMenu();
+  if (state.archived !== archived) {
+    state.archived = archived;
+    state.generation++; // Discard room loads started in the previous filter.
+    if (state.room && (state.room.status === "archived") !== archived) clearConversation();
+  }
+  $("#active-tab").classList.toggle("selected", !archived);
+  $("#archived-tab").classList.toggle("selected", archived);
+  $("#active-tab").setAttribute("aria-pressed", String(!archived));
+  $("#archived-tab").setAttribute("aria-pressed", String(archived));
+  await refreshRooms();
+}
 $("#active-tab").onclick = () => setFilter(false).catch(e => toast(e.message));
 $("#archived-tab").onclick = () => setFilter(true).catch(e => toast(e.message));
 function updateRoom(room) {
@@ -753,7 +772,7 @@ function clearConversation() {
   state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null; applyPanelPreferences();
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); resetComposer();
   clearInvite(); document.querySelectorAll("dialog[open]").forEach(d => d.close());
-  $("#conversation").hidden = true; $("#empty-state").hidden = false;
+  $("#conversation").hidden = true; $("#empty-state").hidden = true;
   history.replaceState(null, "", "/"); renderRooms();
 }
 const deletingRooms = new Set();
