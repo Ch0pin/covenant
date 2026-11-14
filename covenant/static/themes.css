@@ -214,3 +214,4 @@ dialog{background:var(--panel);border-color:var(--line)}
 .participant-info .poke-result[data-level="warning"]{color:#d98a12}
 .participant-controls{flex-wrap:wrap}
 .confirm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}.confirm-actions button{min-height:36px}
+.server-qr{display:flex;align-items:center;gap:12px;margin:12px 0 0;padding-top:12px;border-top:1px solid var(--line)}.server-qr canvas{flex-shrink:0;border-radius:6px}.server-qr-text{min-width:0}.server-qr .settings-scope{margin:0 0 6px}.server-qr-address{display:block;font-size:11px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere;text-decoration:none}.server-qr-address:hover{color:var(--accent)}

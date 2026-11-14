@@ -102,7 +102,7 @@
 .workspace-settings-toggle svg circle{fill:var(--sidebar-bg)}
 .workspace-settings-toggle .settings-chevron{margin-left:auto;transition:transform .15s}
 .workspace-settings-toggle[aria-expanded="true"] .settings-chevron{transform:rotate(180deg)}
-.workspace-settings-menu{padding:4px 4px 8px;max-height:min(280px,36dvh);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.workspace-settings-menu{padding:4px 4px 8px;max-height:min(400px,max(150px,calc(100dvh - 460px)));overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .settings-scope{font-size:10px;color:var(--muted);margin:0 0 12px}
 .workspace-settings-menu .theme-control{display:flex;justify-self:stretch;margin:0 0 12px;gap:10px;font-size:12px}
 .workspace-settings-menu .theme-control>span{display:inline}
