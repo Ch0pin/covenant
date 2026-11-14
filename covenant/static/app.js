@@ -754,6 +754,7 @@ function renderAgents() {
       const renew = element("button", "", "Renew token"); renew.setAttribute("aria-label", `Renew token for ${agent.handle}`);
       renew.onclick = () => renewAgent(agent); controls.append(renew);
       if (!agent.revoked) {const revoke = element("button", "", "Revoke"); revoke.setAttribute("aria-label", `Revoke ${agent.handle}`); revoke.onclick = () => revokeAgent(agent); controls.append(revoke);}
+      const remove = element("button", "", "Remove"); remove.setAttribute("aria-label", `Remove ${agent.handle}`); remove.onclick = () => removeAgent(agent); controls.append(remove);
       list.append(controls);
     }
   }
@@ -880,6 +881,21 @@ $("#copy-invite").onclick = async () => {
 async function revokeAgent(agent) {
   if (!confirm(`Revoke @${agent.handle}'s access to this conversation?`)) return;
   try {await api(`/api/rooms/${state.room.id}/agents/${agent.id}/revoke`, {method: "POST"}); await refreshCurrent(); toast(`Access revoked for @${agent.handle}`);} catch(error) {toast(error.message);}
+}
+// An in-page confirmation: some browsers close their own confirm() prompt before it can be answered.
+function confirmInPage(title, message, action) {
+  const dialog = $("#confirm-dialog");
+  $("#confirm-title").textContent = title; $("#confirm-message").textContent = message; $("#confirm-accept").textContent = action;
+  return new Promise(resolve => {
+    $("#confirm-accept").onclick = () => dialog.close("yes");
+    $("#confirm-cancel").onclick = () => dialog.close("");
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "yes"), {once: true});
+    dialog.returnValue = ""; dialog.showModal();
+  });
+}
+async function removeAgent(agent) {
+  if (!await confirmInPage(`Remove @${agent.handle}?`, "Their messages stay in the chat. Their access and status are deleted.", "Remove")) return;
+  try {await api(`/api/rooms/${state.room.id}/agents/${agent.id}`, {method: "DELETE"}); await refreshCurrent(); toast(`Removed @${agent.handle}`);} catch(error) {toast(error.message);}
 }
 async function renewAgent(agent) {
   if (!confirm(`Generate a new token for @${agent.handle}? Their previous token will stop working.`)) return;

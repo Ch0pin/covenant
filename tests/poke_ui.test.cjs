@@ -34,7 +34,7 @@ function fixture(){
 }
 test('poke button precedes renew token for active agents only and sends a tracked message',async()=>{
  const f=fixture();
- assert.deepEqual(f.list.querySelectorAll('button').map(n=>n.textContent),['Poke','Renew token','Revoke','Renew token']);
+ assert.deepEqual(f.list.querySelectorAll('button').map(n=>n.textContent),['Poke','Renew token','Revoke','Remove','Renew token','Remove']);
  assert.equal(f.line().hidden,true);
  await f.button().onclick();
  assert.deepEqual(f.posts,[{url:'/api/rooms/room-a/messages',body:{text:'@sol Poke from the operator: are you still there? Acknowledge or reply briefly.',client_message_id:'uuid-1'}}]);

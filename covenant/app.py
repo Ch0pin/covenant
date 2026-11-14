@@ -534,6 +534,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await notify(rid)
         return {"ok": True}
 
+    @app.delete("/api/rooms/{room_id}/agents/{agent_id}")
+    async def remove_agent(room_id: UUID, agent_id: UUID, request: Request):
+        operator(request)
+        rid = str(room_id)
+        with db.connect() as conn:
+            room(conn, rid)
+            # Their messages stay in the chat; access, receipts, locks and approvals go with the row.
+            if not conn.execute("DELETE FROM agents WHERE id=? AND room_id=?", (str(agent_id), rid)).rowcount:
+                raise HTTPException(404, "Agent not found")
+            bump(conn, rid)
+        await notify(rid)
+        return {"ok": True}
+
     @app.post("/api/rooms/{room_id}/agents/{agent_id}/rotate")
     async def rotate_token(room_id: UUID, agent_id: UUID, request: Request):
         operator(request)

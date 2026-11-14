@@ -649,3 +649,33 @@ def test_room_opens_at_first_unread_operator_message_even_outside_latest_page(se
     result = client.get(url+f'&focus_after={latest["next_cursor"]}').json()
     assert result['focus_id'] is None
     assert result['messages'] == latest['messages']
+
+
+def test_operator_removes_a_participant_and_keeps_their_messages(setup):
+    client, app, _, headers, rid, (alice, bob) = setup
+    client.post(f"/{rid}/join", headers=bearer(alice), json={})
+    kept = send(client, rid, alice, "@everyone I was here").json()
+    tracked = client.post(f"/api/rooms/{rid}/messages", headers=headers,
+                          json={"text": "@everyone status?", "client_message_id": str(uuid4())}).json()
+    url = f"/api/rooms/{rid}/agents/{alice['id']}"
+    assert client.delete(url).status_code == 403
+    with ThreadPoolExecutor() as executor:
+        waiting = executor.submit(client.get, f"/{rid}/messages?after={tracked['id']}&timeout=3", headers=bearer(alice))
+        time.sleep(0.1)
+        assert client.delete(url, headers=headers).json() == {"ok": True}
+        assert waiting.result(timeout=2).status_code == 401
+    assert client.delete(url, headers=headers).status_code == 404
+    assert send(client, rid, alice).status_code == 401
+    state = client.get(f"/api/rooms/{rid}").json()
+    assert [a["handle"] for a in state["agents"]] == ["bob"]
+    messages = client.get(f"/api/rooms/{rid}/messages").json()["messages"]
+    assert kept["id"] in [m["id"] for m in messages]
+    receipts = client.get(f"/api/rooms/{rid}/message-receipts?ids={tracked['id']}").json()["receipts"]
+    assert [r["handle"] for r in receipts[str(tracked["id"])]] == ["bob"]
+    with app.state.db.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM agents WHERE id=?", (alice["id"],)).fetchone()[0] == 0
+    again = client.post(f"/api/rooms/{rid}/agents", headers=headers, json={"handle": "alice"})
+    assert again.status_code == 201 and again.json()["id"] != alice["id"]
+    other = client.post("/api/rooms", headers=headers, json={"title": "Other", "objective": ""}).json()["id"]
+    assert client.delete(f"/api/rooms/{other}/agents/{bob['id']}", headers=headers).status_code == 404
+    assert send(client, rid, bob).status_code == 200

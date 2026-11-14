@@ -35,7 +35,7 @@ test('circle is beside the name, status precedes Seen and approval connection, c
  assert.equal(info.children[1].textContent,'Waiting for approval · 3 min');
  assert.equal(info.children[2].textContent,'Seen just now');
  assert.equal(info.children[3].className,'approval-connection');
- assert.deepEqual(f.nodes.get('#agent-list').querySelectorAll('button').map(n=>n.textContent),['Renew token','Revoke']);
+ assert.deepEqual(f.nodes.get('#agent-list').querySelectorAll('button').map(n=>n.textContent),['Renew token','Revoke','Remove']);
  assert.equal(info.querySelector('.participant-status-dot').attrs['aria-hidden'],'true');
 });
 test('status updates replace text and colour without replacing controls and network loss clears stale green',async()=>{
