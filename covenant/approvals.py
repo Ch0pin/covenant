@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import digest
+from .native_choices import public_choices, selected_choice
 
 LEASE_SECONDS = 30
 REQUEST_SECONDS = 600
@@ -38,6 +39,7 @@ INTERACTIVE_KINDS = ("question", "plan")
 
 class Decision(ApprovalInput):
     decision: Literal["approve", "reject"]
+    native_choice: str | None = Field(default=None, min_length=1, max_length=64)
     answers: dict[str, str] | None = None
     message: str | None = Field(default=None, max_length=4000)
     # Approving a Claude plan can also switch the session to auto-accept file edits.
@@ -45,6 +47,8 @@ class Decision(ApprovalInput):
 
     @model_validator(mode="after")
     def bounded_response(self):
+        if self.native_choice and (self.answers is not None or self.message is not None or self.auto_accept_edits):
+            raise ValueError("Choose a native permission or an interactive response, not both")
         if self.auto_accept_edits and self.decision != "approve":
             raise ValueError("Auto-accepting edits accompanies a plan approval")
         if self.answers is not None:
@@ -187,7 +191,7 @@ def register_approval_routes(app, db, operator):
             return {"auto_approve_rooms": {p["room_id"]: bool(p["auto_approve"]) for p in conn.execute("SELECT room_id,auto_approve FROM room_approval_policy")},
                     "connections": manager.status() if manager else [], "requests": [{**{k: row[k] for k in (
                 "id", "status", "decision", "handle", "room_id", "room_title", "harness", "session_id", "created_at", "expires_at", "native_resolved", "dismissed_at", "auto_approved")},
-                **json.loads(row["payload"]), "response": json.loads(row["response"]) if row["response"] else None} for row in rows]}
+                **json.loads(row["payload"]), "native_choices": public_choices(row["harness"], json.loads(row["payload"])["kind"], json.loads(row["payload"])["details"]), "response": json.loads(row["response"]) if row["response"] else None} for row in rows]}
 
     @app.post("/api/approvals/{approval_id}/dismiss")
     async def dismiss(approval_id: UUID, request: Request):
@@ -212,6 +216,11 @@ def register_approval_routes(app, db, operator):
             if row["status"] != "pending" or row["alive_until"] <= time.time():
                 raise HTTPException(409, "This request has ended or already received a decision")
             payload = json.loads(row["payload"])
+            if body.native_choice:
+                harness = conn.execute("SELECT harness FROM approval_bridges WHERE id=?", (row["bridge_id"],)).fetchone()[0]
+                choice = selected_choice(harness, payload["kind"], payload["details"], body.native_choice)
+                if choice is None or choice["decision"] != body.decision:
+                    raise HTTPException(422, "This native approval choice was not offered for this request")
             if body.decision == "approve" and not payload["can_approve"]:
                 raise HTTPException(409, "Review and approve this request in the harness")
             if payload["kind"] == "question" and body.decision == "approve":
@@ -225,7 +234,7 @@ def register_approval_routes(app, db, operator):
                 raise HTTPException(422, "Feedback is only sent for questions and plans")
             conn.execute("UPDATE approval_requests SET status='decided',decision=?,decided_by=?,decided_at=? WHERE id=?",
                          (body.decision, username, time.time(), str(approval_id)))
-            response = body.model_dump(include={"answers", "message", "auto_accept_edits"}, exclude_none=True)
+            response = body.model_dump(include={"answers", "message", "auto_accept_edits", "native_choice"}, exclude_none=True)
             if response:
                 conn.execute("INSERT OR REPLACE INTO approval_responses VALUES (?,?)", (str(approval_id), json.dumps(response)))
         return {"status": "decided", "decision": body.decision}

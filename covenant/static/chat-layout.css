@@ -184,3 +184,24 @@
 @keyframes unread-message-pulse{0%,100%{outline-color:var(--accent)}50%{outline-color:transparent}}
 @media(prefers-reduced-motion:reduce){.message-unread-focus>.message-main>.message-bubble{animation:none}}
 .message-unread-focus:focus{outline:none}
+
+.native-approval-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+.native-approval-picker>label{grid-column:1/-1;margin:0;font-size:12px;font-weight:600}
+.native-approval-picker>select{grid-column:1;grid-row:2;min-width:0;width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--input-bg);color:var(--text);font:inherit}
+.native-approval-picker>button{grid-column:2;grid-row:2;min-height:44px;white-space:nowrap;font-size:13px}
+.native-approval-picker>.native-approval-description{grid-column:1/-1;grid-row:3;font-size:12px;line-height:1.5;overflow-wrap:anywhere;margin:0}
+@media(max-width:900px){.native-approval-picker>select{font-size:16px}#approval-request-actions .approval-actions>button{font-size:14px}}
+
+/* Compact, aligned decisions first; optional native scopes underneath. */
+#approval-request-actions{max-height:50dvh;overflow-y:auto;scrollbar-width:thin}
+#approval-request-actions .approval-actions{justify-content:flex-start;align-items:stretch}
+#approval-request-actions .approval-actions>button{flex:0 1 124px;min-height:36px;margin:0;padding:8px 12px;font-size:13px;line-height:1.3;justify-content:center}
+#approval-request-actions .native-approval-picker{grid-template-columns:minmax(0,1fr) 124px;margin-top:12px;padding-top:12px}
+#approval-request-actions .native-approval-picker>select,#approval-request-actions .native-approval-picker>button{box-sizing:border-box;height:36px;min-height:36px;margin:0;padding:7px 10px;font-size:13px;line-height:1.3;align-self:stretch}
+#approval-request-actions .native-approval-description{max-height:72px;overflow:auto;font-size:11px}
+@media(max-width:900px){
+  #approval-request-actions .approval-actions>button{min-height:44px}
+  #approval-request-actions .native-approval-picker{grid-template-columns:minmax(0,1fr) 124px}
+  #approval-request-actions .native-approval-picker>select,#approval-request-actions .native-approval-picker>button{height:44px;min-height:44px}
+  #approval-request-actions .native-approval-picker>select{font-size:16px}
+}

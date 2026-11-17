@@ -255,3 +255,26 @@ test('ordinary approvals still send only the decision',async()=>{
  await action(f,'one','approve').onclick();
  assert.deepEqual(f.network.bodies,[{decision:'approve'}]);
 });
+
+
+test('native dropdown requires an explicit choice and preserves room auto-approve',async()=>{
+ const f=fixture();f.network.rows=[{...request,native_choices:[{id:'session',decision:'approve',label:'Allow for this session',description:'Native session scope'}]}];await f.refresh();
+ const card=openRequest(f);
+ const controls=f.nodes.get('#approval-request-actions');
+ assert.equal(controls.children[0].className,'approval-actions');
+ assert.equal(controls.children[1].className,'native-approval-picker');
+ const select=controls.querySelectorAll('select')[0];
+ const button=controls.querySelectorAll('button').find(b=>b.dataset.approvalAction==='one:native-apply');
+ assert.equal(button.disabled,true);
+ select.value='session';select.onchange();
+ assert.ok(controls.querySelectorAll('p').some(n=>n.textContent.includes('Native session scope')));
+ assert.equal(f.network.decisions.length,0);
+ assert.equal(button.disabled,false);await button.onclick();
+ assert.equal(f.network.bodies[0].native_choice,'session');
+ assert.equal(f.network.policyChanges.length,0);
+});
+
+test('history identifies a native session grant instead of a one-time approval',async()=>{
+ const f=fixture();f.network.rows=[{...request,status:'decided',decision:'approve',response:{native_choice:'session'},native_choices:[{id:'session',decision:'approve',label:'Allow for this session',description:'Session scope'}]}];await f.refresh();
+ assert.ok(f.nodes.get('#approvals-list').querySelectorAll('p').some(p=>p.textContent.includes('Allow for this session')));
+});

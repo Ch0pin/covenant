@@ -177,7 +177,7 @@ def test_codex_native_resolution_cancels_wait_and_other_threads_are_ignored():
     async def run():
         started = asyncio.Event()
         class Waiting(FakeAPI):
-            async def wait(self, aid):
+            async def wait_result(self, aid):
                 started.set()
                 await asyncio.Future()
         api = Waiting(None)
@@ -348,12 +348,12 @@ def test_expiry_declines_native_action_and_persists_notice(approvals, kind, meth
         api = ApprovalClient("http://127.0.0.1", auth["Authorization"][7:])
         await api.client.aclose()
         api.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=auth)
-        original_wait = api.wait
+        original_wait = api.wait_result
         async def expired(aid):
             with app.state.db.connect() as conn:
                 conn.execute("UPDATE approval_requests SET expires_at=0 WHERE id=?", (aid,))
             return await original_wait(aid)
-        api.wait = expired
+        api.wait_result = expired
         listener = CodexApprovals(api, payload["session_id"])
         sent = []
         delivered = asyncio.Event()
@@ -495,3 +495,71 @@ def test_claude_hook_plan_approval_with_auto_accept_edits_sets_the_session_mode(
     tool = asyncio.run(claude_hook({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
                                     "tool_input": {}}, FakeAPI({"status": "decided", "decision": "approve", "auto_accept_edits": True})))
     assert tool["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
+
+
+@pytest.mark.parametrize('scope', ['session', 'always'])
+def test_native_mcp_choice_validated_consumed_once_and_preserves_room_policy(approvals, scope):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    event = mcp_permission_event();event['params']['threadId'] = payload['session_id']
+    event['params']['_meta']['persist'] = ['session', 'always']
+    native = codex_prompt(event, {})
+    aid = submit(approvals, native)
+    row = next(r for r in client.get('/api/approvals').json()['requests'] if r['id'] == aid)
+    assert {c['id'] for c in row['native_choices']} == {'session', 'always'}
+    assert all('result' not in c for c in row['native_choices'])
+    url = f'/api/approvals/{aid}/decision'
+    assert client.post(url, headers=csrf, json={'decision':'reject','native_choice':scope}).status_code == 422
+    assert client.post(url, headers=csrf, json={'decision':'approve','native_choice':scope}).status_code == 200
+    assert client.post(f'/approval-bridge/requests/{aid}/take', headers=auth).json()['native_choice'] == scope
+    assert client.post(f'/approval-bridge/requests/{aid}/take', headers=auth).json() == {'status':'submitted'}
+    assert not client.get('/api/approvals').json()['auto_approve_rooms']
+
+
+def test_unoffered_choice_and_scope_escalation_are_rejected(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    aid = submit(approvals, {**payload,'details':{'command':'printf hello','availableDecisions':['accept','decline']}})
+    for option in ('session','always','cancel','command_rule_0'):
+        assert client.post(f'/api/approvals/{aid}/decision',headers=csrf,json={'decision':'approve','native_choice':option}).status_code == 422
+    assert client.post(f'/api/approvals/{aid}/decision',headers=csrf,json={'decision':'approve'}).status_code == 200
+
+
+@pytest.mark.parametrize('kind,choice,expected', [
+    ('tool','session',{'action':'accept','content':None,'_meta':{'persist':'session'}}),
+    ('tool','always',{'action':'accept','content':None,'_meta':{'persist':'always'}}),
+    ('command','session',{'decision':'acceptForSession'}),
+    ('command','cancel',{'decision':'cancel'}),
+    ('file','session',{'decision':'acceptForSession'}),
+])
+def test_native_scope_roundtrip_to_codex(kind, choice, expected):
+    async def run():
+        response={'decision':'reject' if choice=='cancel' else 'approve','native_choice':choice}
+        api=FakeAPI(response);listener=CodexApprovals(api,'session');job={'resolved':False};sent=[]
+        class Socket:
+            async def send(self, data): sent.append(json.loads(data));job['resolved']=True
+        listener.websocket=Socket()
+        if kind=='tool':
+            event=mcp_permission_event();event['params']['_meta']['persist']=['session','always']
+        else:
+            event={'id':1,'method':'item/'+('fileChange' if kind=='file' else 'commandExecution')+'/requestApproval','params':{'threadId':'session','command':'printf hello'}}
+        await listener.handle(event,job)
+        assert sent[0]['result']==expected
+    asyncio.run(run())
+
+
+def test_auto_approve_never_remembers_native_permission(approvals):
+    client, app, csrf, rid, inv, bid, auth, payload = approvals
+    client.patch(f'/api/rooms/{rid}/approval-policy',headers=csrf,json={'auto_approve':True})
+    event=mcp_permission_event();event['params']['threadId']=payload['session_id'];event['params']['_meta']['persist']=['session','always']
+    aid=submit(approvals,codex_prompt(event,{}))
+    assert client.post(f'/approval-bridge/requests/{aid}/take',headers=auth).json()=={'status':'decided','decision':'approve'}
+
+
+def test_native_choices_respect_advertised_rules_and_human_checkpoints():
+    from covenant.native_choices import codex_choices
+    rule={'acceptWithExecpolicyAmendment':{'execpolicy_amendment':['git','status']}}
+    network={'applyNetworkPolicyAmendment':{'network_policy_amendment':{'action':'deny','host':'example.com'}}}
+    options=codex_choices('command',{'availableDecisions':['accept',rule,network,'cancel']})
+    assert next(c for c in options if c['id']=='command_rule_1')['result']=={'decision':rule}
+    assert next(c for c in options if c['id']=='network_rule_2')['decision']=='reject'
+    assert not any(c['id']=='session' for c in options)
+    assert not any(c['decision']=='approve' for c in codex_choices('command',{'kind':'humanCommand'}))

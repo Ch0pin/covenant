@@ -86,7 +86,8 @@ Create a chat, click **Add agent**, and paste the invitation into the agent's se
 - Start a message with `@handle`, `@everyone` or `@operator`. Type `@` and press **Tab** to pick recipients.
 - Click **Reply** or swipe a message to reply. **View thread** shows the whole discussion.
 - **Pending approvals** (right panel) shows what agents want to do. **Approve** or **Reject** applies to that one request.
-- **Auto-approve all requests** approves everything from every agent in that chat, even with the browser closed. It's off by default; use it with care.
+- Codex approvals show supported session, remembered-tool, command-rule and host-rule choices, with their scope explained. Codex stores those permissions. Restart Covenant after upgrading to load this forwarding change.
+- **Auto-approve all requests** remains separate: it grants one-time approvals for supported requests from every agent in that chat, even with the browser closed. It's off by default.
 - **Theme** and notifications are under **Settings**.
 
 ## Phone app and alerts

@@ -168,7 +168,8 @@
     summary.append(element("strong", "", `${request.handle} · ${request.harness}`));
     summary.append(element("span", "muted", `${request.details.tool_name || request.kind} · ${request.room_title}`));
     card.append(summary);
-    const status = `${labels[request.status] || request.status}${request.decision ? " · " + (request.auto_approved ? "Auto-approved" : request.decision === "approve" ? ({question: "Answered", plan: "Plan approved"}[request.kind] || "Approved once") : request.kind === "question" ? "Declined" : "Rejected") : ""}`;
+    const nativeLabel = (request.native_choices || []).find(c => c.id === request.response?.native_choice)?.label;
+    const status = `${labels[request.status] || request.status}${request.decision ? " · " + (request.auto_approved ? "Auto-approved once" : nativeLabel || (request.decision === "approve" ? ({question: "Answered", plan: "Plan approved"}[request.kind] || "Approved once") : request.kind === "question" ? "Declined" : "Rejected")) : ""}`;
     card.append(element("p", "approval-status", status));
     if (request.status === "pending" && request.expires_at) card.append(element("p", "muted", `Expires at ${timeText(request.expires_at)}`));
     if (request.status === "expired") {
@@ -214,6 +215,38 @@
       const choices = {question: [["approve", "Send answers"], ["reject", "Decline to answer"]],
         plan: [["approve", "Approve plan"], ["approve", "Approve + auto-accept edits", "edits"], ["reject", "Reject plan"]]}[request.kind]
         || [["approve", "Approve once"], ["reject", "Reject"]];
+      const native = Array.isArray(request.native_choices) ? request.native_choices : [];
+      let nativePicker = null;
+      if (native.length) {
+        const group = element("div", "native-approval-picker"), draft = draftFor(request.id);
+        const label = element("label", "", "More approval options");
+        const select = element("select"); select.id = `native-choice-${request.id}`;
+        label.setAttribute("for", select.id);
+        select.dataset.approvalAction = `${request.id}:native-choice`;
+        const placeholder = element("option", "", "Choose an approval scope…"); placeholder.value = ""; select.append(placeholder);
+        for (const option of native) {
+          const item = element("option", "", option.label); item.value = option.id;
+          item.disabled = option.decision === "approve" && !request.can_approve; select.append(item);
+        }
+        select.value = draft.nativeChoice || "";
+        const description = element("p", "native-approval-description muted");
+        description.id = `native-scope-${request.id}`; description.setAttribute("aria-live", "polite");
+        select.setAttribute("aria-describedby", description.id);
+        const apply = element("button", "quiet", "Apply choice"); apply.type = "button";
+        apply.dataset.approvalAction = `${request.id}:native-apply`;
+        const paint = () => {
+          const chosen = native.find(option => option.id === select.value);
+          select.disabled = submitting.has(request.id) || unavailable;
+          apply.disabled = select.disabled || !chosen || (chosen.decision === "approve" && !request.can_approve);
+          description.textContent = chosen?.description || "Choose a scope, review it, then apply your choice.";
+        };
+        select.onchange = () => {draft.nativeChoice = select.value; paint();};
+        apply.onclick = () => {
+          const chosen = native.find(option => option.id === select.value);
+          if (chosen && !apply.disabled) return decideRequest(request, chosen.decision, "native:" + chosen.id);
+        };
+        paint(); group.append(label, select, description, apply); nativePicker = group;
+      }
       for (const [decision, label, variant] of choices) {
         const control = element("button", decision === "reject" ? "quiet danger" : variant ? "quiet" : "primary", label);
         control.type = "button"; control.dataset.approvalAction = `${request.id}:${variant ? decision + "-" + variant : decision}`;
@@ -226,11 +259,13 @@
       }
       if (!request.can_approve) actions.append(element("small", "muted", "Approve from the harness after reviewing its full prompt."));
       (actionTarget || card).append(actions);
+      if (nativePicker) (actionTarget || card).append(nativePicker);
     }
     return card;
   }
   function decisionBody(request, decision, variant) {
     const body = {decision}, draft = draftFor(request.id);
+    if (variant?.startsWith("native:")) body.native_choice = variant.slice(7);
     if (request.kind === "plan" && decision === "approve" && variant === "edits") body.auto_accept_edits = true;
     if (request.kind === "question" && decision === "approve") {
       const answers = {};
@@ -287,7 +322,7 @@
     const detail = requestBody.querySelectorAll(".approval-details")[0];
     if (detail) detail.open = Boolean(expanded);
     requestBody.scrollTop = scroll;
-    if (focused) Array.from(requestActions.querySelectorAll("button")).find(b => b.dataset.approvalAction === focused && !b.disabled)?.focus();
+    if (focused) [...requestActions.querySelectorAll("button"), ...requestActions.querySelectorAll("select"), ...requestBody.querySelectorAll("button"), ...requestBody.querySelectorAll("select")].find(b => b.dataset.approvalAction === focused && !b.disabled)?.focus();
   }
   function openRequest(id) {
     if (!state.me) return;

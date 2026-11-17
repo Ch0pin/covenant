@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 
 from .approvals import close_bridge, create_bridge
+from .native_choices import selected_choice
 from .delivery import codex_connection, codex_endpoint
 
 
@@ -147,7 +148,8 @@ class CodexApprovals:
                 return
             aid = await self.api.submit(payload)
             job["aid"] = aid
-            decision = await self.api.wait(aid)
+            response = await self.api.wait_result(aid)
+            decision = response and response["decision"]
             # The reader marks native resolutions synchronously, before doing any HTTP work.
             if job["resolved"]:
                 return
@@ -158,6 +160,11 @@ class CodexApprovals:
             result = ({"action": answer, "content": None}
                       if event["method"] == "mcpServer/elicitation/request"
                       else {"decision": answer})
+            if response and response.get("native_choice"):
+                choice = selected_choice("codex", payload["kind"], payload["details"], response["native_choice"])
+                if choice is None or choice["decision"] != decision:
+                    raise ValueError("Unsupported native approval choice")
+                result = choice["result"]
             await self.websocket.send(json.dumps({"id": event["id"], "result": result}))
             if expired:
                 # Expiry must resolve the native action, never interrupt the whole turn.
