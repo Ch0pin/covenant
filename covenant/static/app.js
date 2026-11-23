@@ -398,9 +398,16 @@ const avatarSymbols = Object.freeze({
   eye: [["path", {d:"M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"}], ["circle", {cx:"12",cy:"12",r:"3"}]],
   flame: [["path", {d:"M13 2c1 5-4 6-4 10-2-1-2-3-2-3-4 4-3 12 5 12 7 0 9-7 6-11-1 2-2 2-2 2 1-4-1-7-3-10Z"}], ["path", {d:"M12 15c-3 3-2 6 1 6 3-1 3-3-1-6Z"}]]
 });
+function participantFor(handle) {
+  return state.agents.find(agent => agent.handle === handle || agent.aliases?.includes(handle));
+}
+function participantLabel(handle) {
+  const agent = participantFor(handle);
+  return agent?.display_name ? `${agent.display_name} (@${agent.handle})` : agent?.handle || handle;
+}
 function agentAvatarId(handle) {
   if (handle === "operator") return "crown";
-  const choice = state.agents.find(agent => agent.handle === handle)?.avatar_id;
+  const choice = participantFor(handle)?.avatar_id;
   return Object.hasOwn(avatarSymbols, choice) ? choice : "initials";
 }
 function senderAvatar(handle) {
@@ -423,6 +430,7 @@ function senderAvatar(handle) {
   return avatar;
 }
 function refreshMessageAvatars() {
+  for (const label of $("#messages").querySelectorAll(".sender-label[data-handle]")) label.textContent = participantLabel(label.dataset.handle);
   for (const node of $("#messages").querySelectorAll(".avatar[data-sender]")) {
     if (node.dataset.avatar !== agentAvatarId(node.dataset.sender)) node.replaceWith(senderAvatar(node.dataset.sender));
   }
@@ -490,6 +498,7 @@ function setReplyTarget(message) {
   $("#reply-context").hidden = false;
   const input = $("#message-text");
   let recipient = message.sender === "operator" ? (message.targets || []).find(handle => handle !== "operator") || "everyone" : message.sender;
+  recipient = participantFor(recipient)?.handle || recipient;
   if (!["operator", "everyone"].includes(recipient) && !state.agents.some(a => a.handle === recipient && !a.revoked)) recipient = "everyone";
   if (!input.value.trim() && !composerRecipients.length) {
     input.value = `@${recipient} `;
@@ -579,7 +588,8 @@ function renderMessage(message, inThread = false) {
   const avatar = senderAvatar(message.sender);
   const main = element("div", "message-main"), meta = element("div", "message-meta");
   const stamp = element("time", "message-time", timeText(message.created_at)); stamp.dateTime = new Date(message.created_at * 1000).toISOString(); stamp.title = new Date(message.created_at * 1000).toLocaleString();
-  const label = element("strong", "sender-label", message.sender), colors = senderColors(message.sender);
+  const label = element("strong", "sender-label", participantLabel(message.sender)), colors = senderColors(message.sender);
+  label.dataset.handle = message.sender;
   label.style.color = colors.foreground;
   meta.append(stamp);
   const bubble = element("div", "message-bubble");
@@ -727,6 +737,7 @@ function renderFileLocks(result, roomId = state.room?.id) {
   }
 }
 function renderAgents() {
+  globalThis.CovenantParticipantMenu?.sync();
   const list = $("#agent-list"); list.replaceChildren();
   $("#participant-count").textContent = state.agents.filter(a => !a.revoked).length + 1;
   for (const agent of state.agents) {
@@ -734,9 +745,11 @@ function renderAgents() {
     const info = element("div", "participant-info");
     const name = element("div", "participant-name");
     const dot = element("span", "participant-status-dot"); dot.dataset.level = "neutral"; dot.setAttribute("aria-hidden", "true");
-    name.append(element("strong", "", "@" + agent.handle), dot);
+    name.append(element("strong", "", agent.display_name || "@" + agent.handle), dot);
     const status = element("small", "participant-status", "Status loading…"); status.dataset.agentId = agent.id;
-    info.append(name, status, element("small", "", seenText(agent)));
+    info.append(name);
+    if (agent.display_name) info.append(element("small", "", "@" + agent.handle));
+    info.append(status, element("small", "", seenText(agent)));
     globalThis.CovenantParticipantStatus?.paint(agent.id, dot, status);
     const approval = element("small", "approval-connection", "Approvals: setup required");
     approval.dataset.agentId = agent.id;
@@ -751,11 +764,14 @@ function renderAgents() {
       if (!agent.revoked && globalThis.CovenantPoke) {
         const poke = globalThis.CovenantPoke.button(agent); controls.append(poke); globalThis.CovenantPoke.paint(agent, pokeLine, poke);
       }
+      const rename = element("button", "", "Rename"); rename.setAttribute("aria-label", `Rename ${agent.handle}`);
+      rename.onclick = () => openParticipantRename(agent); controls.append(rename);
       const renew = element("button", "", "Renew token"); renew.setAttribute("aria-label", `Renew token for ${agent.handle}`);
       renew.onclick = () => renewAgent(agent); controls.append(renew);
       if (!agent.revoked) {const revoke = element("button", "", "Revoke"); revoke.setAttribute("aria-label", `Revoke ${agent.handle}`); revoke.onclick = () => revokeAgent(agent); controls.append(revoke);}
       const remove = element("button", "", "Remove"); remove.setAttribute("aria-label", `Remove ${agent.handle}`); remove.onclick = () => removeAgent(agent); controls.append(remove);
-      list.append(controls);
+      controls.hidden = true; list.append(controls);
+      globalThis.CovenantParticipantMenu?.attach(row, controls, agent);
     }
   }
 }
@@ -878,6 +894,26 @@ $("#copy-invite").onclick = async () => {
   try {await navigator.clipboard.writeText($("#invite-text").value); $("#copy-invite").textContent = "Copied — paste into the agent session";}
   catch {$("#invite-text").focus(); $("#invite-text").select(); toast("Instructions selected. Use your keyboard's copy command.");}
 };
+let renamingParticipant = null;
+function openParticipantRename(agent) {
+  renamingParticipant = {id: agent.id, roomId: state.room.id};
+  $("#rename-handle").value = agent.handle;
+  $("#rename-display-name").value = agent.display_name || "";
+  $("#rename-participant-error").textContent = "";
+  $("#rename-participant-dialog").showModal();
+}
+$("#rename-participant-form").addEventListener("submit", async event => {
+  event.preventDefault(); const target = renamingParticipant;
+  if (!target) return;
+  const button = $("#rename-participant-save"); button.disabled = true;
+  try {
+    await api(`/api/rooms/${target.roomId}/agents/${target.id}`, {method: "PATCH", body: JSON.stringify({handle: $("#rename-handle").value, display_name: $("#rename-display-name").value})});
+    $("#rename-participant-dialog").close();
+    if (state.room?.id === target.roomId) await refreshCurrent();
+    toast("Participant renamed");
+  } catch(error) {$("#rename-participant-error").textContent = error.message;}
+  finally {button.disabled = false;}
+});
 async function revokeAgent(agent) {
   if (!confirm(`Revoke @${agent.handle}'s access to this conversation?`)) return;
   try {await api(`/api/rooms/${state.room.id}/agents/${agent.id}/revoke`, {method: "POST"}); await refreshCurrent(); toast(`Access revoked for @${agent.handle}`);} catch(error) {toast(error.message);}

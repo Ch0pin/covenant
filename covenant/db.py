@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS agents (
     joined_at REAL, last_seen REAL, created_at REAL NOT NULL,
     UNIQUE(room_id, handle)
 );
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    display_name TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS agent_handle_aliases (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    handle TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    PRIMARY KEY(room_id,handle)
+);
+CREATE INDEX IF NOT EXISTS aliases_agent ON agent_handle_aliases(agent_id);
 CREATE TABLE IF NOT EXISTS agent_avatars (
     agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     avatar_id TEXT NOT NULL CHECK(avatar_id IN ('raven','moon','key','eye','flame'))

@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import digest
+from .participant_names import resolve_handle
 from .native_choices import public_choices, selected_choice
 
 LEASE_SECONDS = 30
@@ -82,6 +83,7 @@ def create_bridge(db, room_id, handle, harness, session_id=None, expected_token_
     token, bridge_id, now = secrets.token_urlsafe(32), str(uuid4()), time.time()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        handle = resolve_handle(conn, room_id, handle)
         identity = conn.execute("""SELECT a.* FROM agents a JOIN rooms r ON r.id=a.room_id
             WHERE a.room_id=? AND a.handle=? AND a.revoked=0 AND r.status='active'""",
             (room_id, handle)).fetchone()

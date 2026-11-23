@@ -12,6 +12,7 @@
   <script src="/static/approvals.js" defer></script>
   <script src="/static/participant-status.js" defer></script>
   <script src="/static/poke.js" defer></script>
+  <script src="/static/participant-menu.js" defer></script>
   <script src="/static/mobile.js" defer></script>
   <script src="/static/pwa.js" defer></script>
   <script src="/static/push.js" defer></script>
@@ -87,8 +88,19 @@
   <dialog id="agent-dialog"><form id="agent-form"><div class="dialog-header"><h2>Add an agent</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Give this agent a handle. Its task stays defined in its existing session.</p><label>Handle<input name="handle" placeholder="alice" pattern="[A-Za-z][A-Za-z0-9_]{0,31}" title="Use 1–32 letters, numbers, or underscores, starting with a letter." maxlength="32" required autocapitalize="none" spellcheck="false"></label><p class="field-help">Letters, numbers, and underscores. Start with a letter. Saved in lowercase: Sol becomes sol.</p><label class="invite-option" title="Include direct HTTP instructions for agents without Covenant MCP tools."><input id="agent-include-http" type="checkbox">Include HTTP fallback instructions</label><p class="dialog-error error" role="alert"></p><button class="primary full" type="submit">Create connection instructions</button></form></dialog>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-header"><h2 id="confirm-title">Confirm</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p id="confirm-message" class="muted"></p><div class="confirm-actions"><button id="confirm-cancel" type="button" class="quiet">Cancel</button><button id="confirm-accept" type="button" class="quiet danger">Confirm</button></div></dialog>
   <dialog id="invite-dialog" class="invite-dialog"><div class="dialog-header"><h2 id="invite-title">Agent connection</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Paste these instructions into the running agent session. The token is shown here once.</p><label class="invite-option" title="Include direct HTTP instructions for agents without Covenant MCP tools."><input id="invite-include-http" type="checkbox" aria-controls="invite-text">Include HTTP fallback instructions</label><label class="sr-only" for="invite-text">Connection instructions</label><textarea id="invite-text" readonly rows="12" spellcheck="false"></textarea><button id="copy-invite" class="primary full">Copy connection instructions</button><p class="field-help">Lost the instructions? Renew the agent's token to create a fresh copy.</p></dialog>
+  <div id="participant-menu" class="room-menu participant-menu" role="menu" aria-label="Participant actions" hidden></div>
   <div id="room-menu" class="room-menu" role="menu" aria-label="Conversation actions" hidden><button id="menu-archive" role="menuitem">Archive</button><button id="menu-delete" class="danger" role="menuitem">Delete permanently</button></div>
 
+  <dialog id="rename-participant-dialog" aria-labelledby="rename-participant-title">
+    <div class="dialog-header"><h2 id="rename-participant-title">Rename participant</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div>
+    <form id="rename-participant-form">
+      <label>Handle<input id="rename-handle" required maxlength="32" pattern="[A-Za-z][A-Za-z0-9_]{0,31}" title="Start with a letter; use letters, numbers and underscores" autocomplete="off"></label>
+      <label>Display name<input id="rename-display-name" maxlength="80" placeholder="Optional friendly name" autocomplete="off"></label>
+      <p class="field-help">Previous handles keep working for existing messages and connected agents.</p>
+      <p id="rename-participant-error" class="error" role="alert"></p>
+      <button id="rename-participant-save" class="primary" type="submit">Save changes</button>
+    </form>
+  </dialog>
   <dialog id="approval-request-dialog" class="approval-request-dialog" aria-labelledby="approval-request-title">
     <div class="dialog-header"><h2 id="approval-request-title">Approval request</h2><button type="button" class="icon-button close-dialog" aria-label="Close approval request" autofocus>×</button></div>
     <p id="approval-request-error" class="error" role="alert" hidden></p>

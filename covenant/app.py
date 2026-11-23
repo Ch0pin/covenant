@@ -21,6 +21,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .auth import csrf_token, digest, hash_password, verify_password
 from .config import Settings
 from .avatars import AvatarId
+from .participant_names import aliases, expand_targets
 from .claude_status import busy as claude_busy
 from .db import Database
 from .instructions import connection_instructions, http_connection_instructions
@@ -91,6 +92,18 @@ class NewAgent(Input):
     @classmethod
     def normalize_handle(cls, value):
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class RenameAgent(NewAgent):
+    display_name: str = Field(default="", max_length=80)
+
+    @field_validator("display_name")
+    @classmethod
+    def clean_name(cls, value):
+        value = value.strip()
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("Display names must be a single line")
+        return value
 
 
 class JoinRequest(Input):
@@ -230,11 +243,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def participants(conn, room_id, include_revoked=False):
         query = """SELECT a.id,a.handle,a.joined_at,a.last_seen,a.revoked,
-            COALESCE(v.avatar_id,'initials') AS avatar_id FROM agents a
+            COALESCE(v.avatar_id,'initials') AS avatar_id,COALESCE(p.display_name,'') AS display_name FROM agents a
+            LEFT JOIN agent_profiles p ON p.agent_id=a.id
             LEFT JOIN agent_avatars v ON v.agent_id=a.id WHERE a.room_id=?"""
         if not include_revoked:
             query += " AND a.revoked=0"
-        return [dict(r) for r in conn.execute(query + " ORDER BY a.created_at", (room_id,))]
+        result = [dict(r) for r in conn.execute(query + " ORDER BY a.created_at", (room_id,))]
+        for person in result:
+            person["aliases"] = [r[0] for r in conn.execute("SELECT handle FROM agent_handle_aliases WHERE agent_id=? ORDER BY handle", (person["id"],))]
+        return result
 
     def bump(conn, room_id):
         conn.execute("UPDATE rooms SET revision=revision+1, updated_at=? WHERE id=?",
@@ -254,7 +271,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def message_dict(row, conn):
         result = {key: row[key] for key in ("id", "sender", "target", "text", "created_at")}
-        result["targets"] = message_targets(row["text"])[0]
+        result["targets"] = expand_targets(message_targets(row["text"])[0], aliases(conn, row["room_id"]))
         link = conn.execute("SELECT reply_to FROM message_replies WHERE message_id=?", (row["id"],)).fetchone()
         if link:
             result["reply_to"] = link["reply_to"]
@@ -287,8 +304,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def history(conn, rid, handle, limit, scope, before=None):
         # Filtering happens before LIMIT so unrelated chatter cannot hide relevant history.
+        names = aliases(conn, rid)
         conn.create_function("addressed_to", 2, lambda sender, text:
-            sender != handle and bool({handle, "everyone"} & set(message_targets(text)[0])))
+            sender != handle and bool({handle, "everyone"} & set(expand_targets(message_targets(text)[0], names))))
         query = "SELECT * FROM messages WHERE room_id=? AND id<?"
         if scope == "inbox":
             query += " AND addressed_to(sender,text)"
@@ -322,6 +340,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         targets, message_body = message_targets(body.text)
         if not targets or not message_body:
             raise HTTPException(422, "Start with one or more @handles, @operator, or @everyone followed by your message")
+        names = aliases(conn, room_id)
+        targets = list(dict.fromkeys(names.get(t, t) for t in targets))
         for recipient in targets:
             if recipient not in {"operator", "everyone"} and not conn.execute(
                     "SELECT 1 FROM agents WHERE room_id=? AND handle=? AND revoked=0",
@@ -506,8 +526,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "That handle is reserved")
         rid, token, aid = str(room_id), secrets.token_urlsafe(32), str(uuid4())
         with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             if room(conn, rid)["status"] == "archived":
                 raise HTTPException(409, "Restore this conversation before adding agents")
+            if conn.execute("SELECT 1 FROM agent_handle_aliases WHERE room_id=? AND handle=?", (rid, body.handle)).fetchone():
+                raise HTTPException(409, "That handle belongs to an existing participant's history")
             try:
                 conn.execute("INSERT INTO agents(id,room_id,handle,token_hash,created_at) VALUES (?,?,?,?,?)",
                              (aid, rid, body.handle, digest(token), time.time()))
@@ -519,6 +542,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "room_url": f"{settings.public_base_url}/{rid}",
                 "instructions": connection_instructions(settings.public_base_url, rid, body.handle, token),
                 "http_instructions": http_connection_instructions(settings.public_base_url, rid)}
+
+    @app.patch("/api/rooms/{room_id}/agents/{agent_id}")
+    async def rename_agent(room_id: UUID, agent_id: UUID, body: RenameAgent, request: Request):
+        operator(request)
+        rid, aid = str(room_id), str(agent_id)
+        if body.handle in {"operator", "everyone"}:
+            raise HTTPException(422, "That handle is reserved")
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if room(conn, rid)["status"] == "archived":
+                raise HTTPException(409, "Restore this conversation before renaming participants")
+            person = conn.execute("SELECT handle FROM agents WHERE id=? AND room_id=?", (aid, rid)).fetchone()
+            if not person:
+                raise HTTPException(404, "Participant not found")
+            occupied = conn.execute("SELECT 1 FROM agents WHERE room_id=? AND handle=? AND id!=?", (rid, body.handle, aid)).fetchone()
+            previous = conn.execute("SELECT 1 FROM agent_handle_aliases WHERE room_id=? AND handle=? AND agent_id!=?", (rid, body.handle, aid)).fetchone()
+            if occupied or previous:
+                raise HTTPException(409, "That handle already belongs to another participant")
+            if person["handle"] != body.handle:
+                conn.execute("INSERT OR IGNORE INTO agent_handle_aliases VALUES (?,?,?)", (rid, person["handle"], aid))
+                conn.execute("UPDATE agents SET handle=? WHERE id=?", (body.handle, aid))
+                conn.execute("UPDATE messages SET sender=? WHERE room_id=? AND sender=?", (body.handle, rid, person["handle"]))
+            conn.execute("INSERT INTO agent_profiles VALUES (?,?) ON CONFLICT(agent_id) DO UPDATE SET display_name=excluded.display_name", (aid, body.display_name))
+            bump(conn, rid)
+        await notify(rid)
+        return {"id": aid, "handle": body.handle, "display_name": body.display_name}
 
     @app.post("/api/rooms/{room_id}/agents/{agent_id}/revoke")
     async def revoke_agent(room_id: UUID, agent_id: UUID, request: Request):

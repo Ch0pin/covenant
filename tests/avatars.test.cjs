@@ -32,3 +32,13 @@ test('updates an existing message avatar when its participant changes selection'
   f.state.agents=[{handle:'sol',avatar_id:'raven'}];f.ctx.refreshMessageAvatars();
   assert.equal(replacement.dataset.avatar,'raven');
 });
+
+test('renamed participants retain their avatar and resolve old sender labels',()=>{
+  const f=fixture();
+  f.state.agents=[{handle:'reviewer',aliases:['sol'],display_name:'Static Reviewer',avatar_id:'eye'}];
+  assert.equal(f.ctx.participantLabel('sol'),'Static Reviewer (@reviewer)');
+  assert.equal(f.ctx.participantLabel('reviewer'),'Static Reviewer (@reviewer)');
+  assert.equal(f.ctx.agentAvatarId('sol'),'eye');
+  f.state.agents[0].display_name='';
+  assert.equal(f.ctx.participantLabel('sol'),'reviewer');
+});

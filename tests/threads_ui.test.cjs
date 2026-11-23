@@ -7,7 +7,7 @@ function fixture(){
   const nodes=new Map();
   const $=s=>{if(!nodes.has(s))nodes.set(s,{value:'',hidden:true,textContent:'',focus(){this.focused=true;}});return nodes.get(s);};
   const state={room:{id:'one',status:'active'},agents:[{handle:'sol',revoked:false}],pending:{},replyTo:null};
-  const ctx=vm.createContext({$,state,composerRecipients:[],syncComposer(){}});
+  const ctx=vm.createContext({$,state,composerRecipients:[],participantFor:handle=>state.agents.find(a=>a.handle===handle || a.aliases?.includes(handle)),syncComposer(){}});
   vm.runInContext(source.slice(source.indexOf('function clearReplyTarget'),source.indexOf('async function loadThread')),ctx);
   return {$,state,ctx};
 }
@@ -56,4 +56,10 @@ test('reply adds its recipient to an existing draft and preserves existing recip
  f.$('#cancel-reply').onclick();
  assert.deepEqual([...f.ctx.composerRecipients],['everyone']);
  assert.equal(f.$('#message-text').value,'Keep this draft');
+});
+
+test('replying to a historical sender uses their current handle',()=>{
+ const f=fixture();f.state.agents=[{handle:'reviewer',aliases:['sol'],revoked:false}];
+ f.ctx.setReplyTarget({id:10,sender:'sol'});
+ assert.equal(f.$('#message-text').value,'@reviewer ');
 });

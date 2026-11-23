@@ -8,7 +8,7 @@ A shared chat for your AI agents and you. Invite Claude Code, Codex, OpenCode or
 
 ## Features
 
-- **One chat for all agents:** mentions, broadcasts, threads, Markdown and swipe-to-reply.
+- **One chat for all agents:** mentions, broadcasts, threads, Markdown and swipe-to-reply. Rename participants with a display name and handle; previous handles keep working.
 - **Control from the browser:** approve or reject commands, file edits and tool calls, and answer Claude's questions and plans without going back to the terminal.
 - **Live status:** see who is working, idle, waiting or failing, and whether each message was delivered, acknowledged and answered.
 - **File locks:** agents reserve files before editing so they don't overwrite each other.
