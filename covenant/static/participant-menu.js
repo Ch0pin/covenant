@@ -1,7 +1,14 @@
 "use strict";
 (() => {
   const menu = document.querySelector("#participant-menu");
-  let target = null;
+  let target = null, selectedRow = null, selectedTrigger = null;
+  function selectRow(row, trigger) {
+    if (selectedRow) selectedRow.dataset.menuOpen = "false";
+    selectedTrigger?.setAttribute("aria-expanded", "false");
+    selectedRow = row; selectedTrigger = trigger;
+    if (row) row.dataset.menuOpen = "true";
+    trigger?.setAttribute("aria-expanded", "true");
+  }
   function valid() {
     return target && state.me && state.room?.id === target.room && state.room.status !== "archived" &&
       state.agents.some(a => a.id === target.id && a.handle === target.handle && !!a.revoked === target.revoked);
@@ -9,13 +16,15 @@
   function close(focus = false) {
     const id = target?.id;
     menu.hidden = true; target = null; menu.replaceChildren();
+    selectRow(null, null);
     if (focus && id) document.querySelector(`.participant-menu-trigger[data-agent-id="${id}"]`)?.focus();
   }
   function sync() {if (target && !valid()) close();}
-  function open(agent, controls, x, y) {
+  function open(agent, controls, row, trigger, x, y) {
     close();
     target = {id: agent.id, handle: agent.handle, revoked: !!agent.revoked, room: state.room?.id};
     if (!valid()) {close(); return;}
+    selectRow(row, trigger);
     if (typeof closeRoomMenu === "function") closeRoomMenu();
     for (const button of [...controls.children]) {
       const action = button.onclick;
@@ -50,7 +59,9 @@
       const fresh = document.querySelector(`.participant-menu-trigger[data-agent-id="${id}"]`);
       if (fresh) fresh.openMenu(x, y);
     };
-    trigger.openMenu = (x, y) => open(agent, controls, x, y);
+    trigger.setAttribute("aria-expanded", "false");
+    if (target?.id === agent.id && valid()) selectRow(row, trigger);
+    trigger.openMenu = (x, y) => open(agent, controls, row, trigger, x, y);
     trigger.onclick = () => {const r = trigger.getBoundingClientRect(); show(r.right, r.bottom);};
     row.oncontextmenu = event => {event.preventDefault(); show(event.clientX, event.clientY);};
     trigger.onkeydown = event => {

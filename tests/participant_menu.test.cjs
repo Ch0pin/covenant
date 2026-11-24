@@ -33,10 +33,15 @@ test('right click opens bounded menu, refresh preserves it, action runs once and
  const f=fixture();let prevented=false;
  f.row().oncontextmenu({clientX:370,clientY:590,preventDefault(){prevented=true;}});
  assert.equal(prevented,true);assert.equal(f.menu.hidden,false);
+ assert.equal(f.row().dataset.menuOpen,'true');
+ assert.equal(f.trigger().attrs['aria-expanded'],'true');
  assert.equal(f.menu.style.left,'177px');assert.equal(f.menu.style.top,'392px');
  assert.deepEqual(f.menu.children.map(n=>n.textContent),['Poke','Rename','Renew token','Revoke','Remove']);
  f.renderAgents();assert.equal(f.menu.hidden,false);
+ assert.equal(f.row().dataset.menuOpen,'true');
  f.menu.children[1].onclick({});assert.deepEqual(f.calls,['Rename']);assert.equal(f.menu.hidden,true);
+ assert.equal(f.row().dataset.menuOpen,'false');
+ assert.equal(f.trigger().attrs['aria-expanded'],'false');
  f.trigger().onclick();assert.equal(f.menu.children.length,5);
 });
 test('tap opens the same menu, Escape and outside clicks dismiss it',()=>{

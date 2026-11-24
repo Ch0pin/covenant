@@ -218,5 +218,13 @@ dialog{background:var(--panel);border-color:var(--line)}
 
 .participant-menu-trigger{flex:none;align-self:flex-start;border:0;padding:0 8px;min-width:32px;min-height:32px;font-size:22px;color:var(--muted);line-height:1;touch-action:manipulation}
 .participant-info{min-width:0;flex:1}
-.participant-menu{max-height:calc(100dvh - 16px);overflow-y:auto}
-.participant-menu button{min-height:40px}
+.participant-menu{min-width:156px;padding:4px;max-height:calc(100dvh - 16px);overflow-y:auto;border-radius:8px;box-shadow:0 6px 20px #0003}
+.participant-menu button{min-height:30px;padding:5px 10px;font-size:12px;font-weight:400;line-height:1.4;border-radius:4px}
+.participant-menu button:focus{outline:none;background:var(--hover)}
+.participant-menu button:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+.participant[data-menu-open="true"]{background:var(--hover);outline:none;box-shadow:inset 0 0 0 1px var(--accent);border-radius:6px}
+@media(pointer:coarse){.participant-menu button{min-height:40px;padding:8px 12px;font-size:14px}}
+
+/* Mouse hover owns the highlight even when another action retains keyboard focus. */
+.participant-menu:has(button:hover) button:not(:hover){background:transparent;outline:none}
+.participant-menu button:not(:disabled):hover{background:var(--accent);color:var(--bg);outline:none}
