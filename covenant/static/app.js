@@ -1,6 +1,6 @@
 "use strict";
 const $ = (selector) => document.querySelector(selector);
-const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, loading: false, pending: null, replyTo: null};
+const state = {me: null, csrf: "", archived: false, rooms: [], room: null, agents: [], cursor: 0, first: 0, generation: 0, messageEpoch: 0, loading: false, messagesReady: false, messageLoadError: false, preserveUnread: false, unreadAcknowledged: false, jumpLoading: false, pending: null, replyTo: null};
 // Messages shown when a chat opens, and per older page loaded while scrolling up.
 const FIRST_PAGE = 10, OLDER_PAGE = 20;
 $("#theme-select").value = document.documentElement.dataset.theme || "covenant";
@@ -158,7 +158,7 @@ function roomHasUnread(room) {return (room.latest_agent_message_id || 0) > (room
 function roomHasUnreadForOperator(room) {return (room.latest_operator_message_id || 0) > (roomReadCursors[room.id] || 0);}
 function markCurrentRoomRead() {
   const scroll = $("#message-scroll");
-  if (!state.me || !state.room || document.visibilityState !== "visible" || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight >= 100) return;
+  if (!state.me || !state.room || state.preserveUnread || document.visibilityState !== "visible" || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight >= 100) return;
   if (state.cursor <= (roomReadCursors[state.room.id] || 0)) return;
   roomReadCursors[state.room.id] = state.cursor;
   try {localStorage.setItem(`covenant-read:${state.me.username}`, JSON.stringify(roomReadCursors));} catch {}
@@ -322,6 +322,7 @@ function updateRoom(room) {
   $("#pause-room").hidden = room.status === "archived"; $("#pause-room").textContent = room.status === "paused" ? "Resume" : "Pause";
   $("#archive-room").textContent = room.status === "archived" ? "Restore" : "Archive";
   $("#delete-room").hidden = room.status !== "archived";
+  for (const selector of ["#pause-room", "#archive-room", "#delete-room"]) $(selector).disabled = false;
   $("#add-agent").disabled = room.status === "archived";
   if (room.status === "archived") hideMentions();
   $("#message-text").disabled = room.status === "archived"; $("#send-message").disabled = room.status === "archived";
@@ -333,28 +334,81 @@ async function selectRoom(id) {
   closeRoomMenu();
   const generation = ++state.generation;
   const readCursor = roomReadCursors[id] || 0;
-  const [room, messages] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}&focus_after=${readCursor}`)]);
-  if (generation !== state.generation || !state.me) return;
   clearReplyTarget();
-  updateRoom(room); state.agents = room.agents; state.cursor = messages.next_cursor;
-  state.first = messages.messages[0]?.id || 0; state.pending = null;
+  const summary = state.rooms.find(room => room.id === id) || {id, title:"Conversation", status:"active"};
+  state.room = summary; state.agents = []; state.cursor = 0; state.first = 0; state.messagesReady = false; state.messageLoadError = false;
+  state.preserveUnread = true; state.unreadAcknowledged = false; state.jumpLoading = false; state.pending = null; state.messageEpoch++;
   $("#messages").replaceChildren(); resetComposer(); $("#message-error").textContent = "";
   $("#empty-state").hidden = true; $("#conversation").hidden = false;
-  $("#load-older").hidden = !(messages.has_older ?? messages.has_more);
-  appendMessages(messages.messages); renderAgents(); renderRooms();
+  $("#load-older").hidden = true; $("#jump-first-unread").hidden = (summary.latest_operator_message_id || 0) <= readCursor; $("#jump-first-unread").disabled = false; $("#retry-messages").hidden = true;
+  $("#no-messages").hidden = false; $("#no-messages h2").textContent = "Loading messages…"; $("#no-messages p").textContent = "";
+  $("#room-title").textContent = summary.title; $("#room-status").textContent = summary.status; $("#room-status").className = `status-badge ${summary.status}`;
+  $("#objective-box").hidden = true; renderFileLocks(undefined, id);
+  for (const selector of ["#pause-room", "#archive-room", "#delete-room", "#add-agent", "#message-text", "#send-message"]) $(selector).disabled = true;
+  renderAgents(); renderRooms(); applyPanelPreferences();
   history.replaceState(null, "", `/${id}`); applyPanelWidths();
   globalThis.CovenantMobile?.roomSelected();
-  const target = messages.focus_id ? $("#messages").querySelector(`:scope > [data-id="${messages.focus_id}"]`) : null;
-  if (target) {
-    const box = $("#message-scroll");
-    box.scrollTop += target.getBoundingClientRect().top - box.getBoundingClientRect().top - 24;
-    target.classList.add("message-unread-focus");
-    target.setAttribute("tabindex", "-1"); target.focus({preventScroll: true});
-    updateScrollBottomButton();
-  } else scrollBottom();
-  markCurrentRoomRead();
-  loadOlderNearTop();
+  const detailsPromise = api(`/api/rooms/${id}`).then(room => {
+    if (generation !== state.generation || !state.me) return;
+    updateRoom(room); state.agents = room.agents; renderAgents(); refreshMessageAvatars();
+    if (!state.unreadAcknowledged && Object.hasOwn(room, "latest_operator_message_id")) {
+      const hasUnread = (room.latest_operator_message_id || 0) > readCursor;
+      state.preserveUnread = hasUnread; $("#jump-first-unread").hidden = !hasUnread;
+    }
+    if (!state.messagesReady) {
+      $("#no-messages").hidden = false;
+      $("#no-messages h2").textContent = state.messageLoadError ? "Messages unavailable" : "Loading messages…";
+      $("#no-messages p").textContent = state.messageLoadError ? $("#no-messages p").textContent : "";
+    }
+    if (!$("#mention-picker").hidden) updateMentions();
+  });
+  const messagesPromise = loadInitialMessages(id, generation);
+  const results = await Promise.allSettled([detailsPromise, messagesPromise]);
+  if (generation !== state.generation || !state.me) return;
+  const failure = results.find(result => result.status === "rejected");
+  if (failure) throw failure.reason;
 }
+async function loadInitialMessages(id, generation = state.generation) {
+  const epoch = ++state.messageEpoch;
+  state.messageLoadError = false; $("#retry-messages").hidden = true;
+  try {
+    const messages = await api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}`);
+    if (generation !== state.generation || epoch !== state.messageEpoch || !state.me) return;
+    state.cursor = messages.next_cursor; state.first = messages.messages[0]?.id || 0; state.messagesReady = true;
+    $("#messages").replaceChildren(); $("#load-older").hidden = !(messages.has_older ?? messages.has_more);
+    appendMessages(messages.messages); scrollBottom();
+  } catch (error) {
+    if (generation === state.generation && epoch === state.messageEpoch && state.me) {
+      state.messageLoadError = true; $("#no-messages").hidden = false;
+      $("#no-messages h2").textContent = "Messages unavailable"; $("#no-messages p").textContent = error.message; $("#retry-messages").hidden = false;
+    }
+    throw error;
+  }
+}
+$("#retry-messages").onclick = () => {
+  if (!state.room || state.messagesReady) return;
+  loadInitialMessages(state.room.id).catch(() => {});
+};
+async function jumpFirstUnread() {
+  if (!state.room || !state.messagesReady || state.jumpLoading) return;
+  const id = state.room.id, generation = state.generation, readCursor = roomReadCursors[id] || 0;
+  const epoch = ++state.messageEpoch; state.jumpLoading = true; $("#jump-first-unread").disabled = true;
+  try {
+    const messages = await api(`/api/rooms/${id}/messages?before=9223372036854775807&limit=${FIRST_PAGE}&focus_after=${readCursor}`);
+    if (generation !== state.generation || epoch !== state.messageEpoch || !state.me) return;
+    state.cursor = messages.next_cursor; state.first = messages.messages[0]?.id || 0;
+    clearReplyTarget(); $("#messages").replaceChildren(); $("#load-older").hidden = !(messages.has_older ?? messages.has_more); appendMessages(messages.messages);
+    const target = messages.focus_id ? $("#messages").querySelector(`:scope > [data-id="${messages.focus_id}"]`) : null;
+    if (target) {
+      const box = $("#message-scroll"); box.scrollTop += target.getBoundingClientRect().top - box.getBoundingClientRect().top - 24;
+      target.classList.add("message-unread-focus"); target.setAttribute("tabindex", "-1"); target.focus({preventScroll:true}); updateScrollBottomButton();
+    }
+    state.unreadAcknowledged = true; state.preserveUnread = false; $("#jump-first-unread").hidden = true;
+  } finally {
+    if (generation === state.generation) {state.jumpLoading = false; $("#jump-first-unread").disabled = false;}
+  }
+}
+$("#jump-first-unread").onclick = () => jumpFirstUnread().catch(error => toast(error.message));
 function clearMessageHighlight() {
   for (const message of $("#messages").querySelectorAll(".message-unread-focus")) {
     message.classList.remove("message-unread-focus");
@@ -663,10 +717,10 @@ function appendMessages(messages) {
 // so phones never have to build and paint the whole history at once.
 let olderLoading = null;
 async function loadOlder() {
-  const generation = state.generation, room = state.room;
-  if (!room || olderLoading === generation || $("#load-older").hidden) return;
+  const generation = state.generation, epoch = state.messageEpoch, room = state.room;
+  if (!room || state.jumpLoading || olderLoading === generation || $("#load-older").hidden) return;
   olderLoading = generation; $("#load-older").disabled = true;
-  try {const result = await api(`/api/rooms/${room.id}/messages?before=${state.first}&limit=${OLDER_PAGE}`); if (generation !== state.generation) return;
+  try {const result = await api(`/api/rooms/${room.id}/messages?before=${state.first}&limit=${OLDER_PAGE}`); if (generation !== state.generation || epoch !== state.messageEpoch) return;
     const scroll = $("#message-scroll"), oldHeight = scroll.scrollHeight, fragment = document.createDocumentFragment();
     result.messages.forEach(m => fragment.append(renderMessage(m))); $("#messages").prepend(fragment);
     refreshThreadControls();
@@ -675,7 +729,7 @@ async function loadOlder() {
     scroll.scrollTop += scroll.scrollHeight - oldHeight;
   } catch(error) {if (generation === state.generation) toast(error.message); return;}
   finally {if (olderLoading === generation) {olderLoading = null; $("#load-older").disabled = false;}}
-  if (generation === state.generation) loadOlderNearTop();
+  if (generation === state.generation && epoch === state.messageEpoch) loadOlderNearTop();
 }
 function loadOlderNearTop() {
   if (state.room && !$("#load-older").hidden && $("#message-scroll").scrollTop < 600) loadOlder();
@@ -786,7 +840,9 @@ $("#archive-room").onclick = () => roomAction(state.room.status === "archived" ?
 function clearConversation() {
   clearReplyTarget();
   hideMentions();
-  state.generation++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.pending = null; applyPanelPreferences();
+  state.generation++; state.messageEpoch++; state.room = null; state.agents = []; state.cursor = 0; state.first = 0; state.messagesReady = false; state.messageLoadError = false; state.preserveUnread = false; state.unreadAcknowledged = false; state.jumpLoading = false; state.pending = null; applyPanelPreferences();
+  $("#jump-first-unread").disabled = false;
+  $("#jump-first-unread").hidden = true;
   $("#messages").replaceChildren(); $("#agent-list").replaceChildren(); resetComposer();
   clearInvite(); document.querySelectorAll("dialog[open]").forEach(d => d.close());
   $("#conversation").hidden = true; $("#empty-state").hidden = true;
@@ -1088,19 +1144,24 @@ $("#message-text").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey && !globalThis.CovenantMobile?.isMobile) {event.preventDefault(); if (!$("#send-message").disabled) $("#message-form").requestSubmit();}
 });
 async function refreshCurrent() {
-  if (!state.room || !state.me) return;
-  const id = state.room.id, generation = state.generation;
-  let room, result;
-  try { [room, result] = await Promise.all([api(`/api/rooms/${id}`), api(`/api/rooms/${id}/messages?after=${state.cursor}`)]); }
-  catch (error) {
+  if (!state.room || !state.me || !state.messagesReady || state.jumpLoading) return;
+  const id = state.room.id, generation = state.generation, epoch = state.messageEpoch;
+  const detailsPromise = api(`/api/rooms/${id}`).then(room => {
     if (generation !== state.generation || !state.me) return;
-    if (error.status === 404) {clearConversation(); await refreshRooms(); return;}
-    throw error;
-  }
+    updateRoom(room); state.agents = room.agents; renderAgents(); refreshMessageAvatars();
+    if (!$("#mention-picker").hidden) updateMentions();
+  });
+  const messagesPromise = api(`/api/rooms/${id}/messages?after=${state.cursor}`).then(result => {
+    if (generation !== state.generation || epoch !== state.messageEpoch || !state.me) return;
+    appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor); markCurrentRoomRead();
+  });
+  const results = await Promise.allSettled([detailsPromise, messagesPromise]);
   if (generation !== state.generation || !state.me) return;
-  updateRoom(room); state.agents = room.agents; renderAgents(); refreshMessageAvatars();
-  if (!$("#mention-picker").hidden) updateMentions();
-  appendMessages(result.messages); state.cursor = Math.max(state.cursor, result.next_cursor); markCurrentRoomRead();
+  const failure = results.find(result => result.status === "rejected");
+  if (failure) {
+    if (failure.reason.status === 404) {clearConversation(); await refreshRooms(); return;}
+    throw failure.reason;
+  }
   await refreshThreads();
   if (generation !== state.generation) return;
   await refreshReceipts(id, generation);

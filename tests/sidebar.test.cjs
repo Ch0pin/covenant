@@ -22,6 +22,13 @@ test('unread markers advance only when the current chat is visible and scrolled 
   const reloaded=fixture(f.stored);assert.equal(reloaded.ctx.roomHasUnread(room),false);
   reloaded.state.me.username='another';reloaded.ctx.loadRoomReads();assert.equal(reloaded.ctx.roomHasUnread(room),true);
 });
+test('an undiscovered addressed message keeps the read cursor unchanged at the latest page',()=>{
+  const f=fixture(),room={id:'room',latest_agent_message_id:12,latest_operator_message_id:12};
+  f.state.preserveUnread=true;f.ctx.markCurrentRoomRead();
+  assert.equal(f.ctx.roomHasUnreadForOperator(room),true);
+  f.state.preserveUnread=false;f.ctx.markCurrentRoomRead();
+  assert.equal(f.ctx.roomHasUnreadForOperator(room),false);
+});
 test('the stronger marker is reserved for unread messages addressed to the operator',()=>{
   const f=fixture();
   assert.equal(f.ctx.roomHasUnreadForOperator({id:'room',latest_agent_message_id:12,latest_operator_message_id:0}),false);
