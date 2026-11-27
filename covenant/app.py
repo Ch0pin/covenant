@@ -485,7 +485,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = room(conn, str(room_id))
             result["agents"] = participants(conn, str(room_id), True)
             result["file_locks"] = visible_file_locks(conn, str(room_id))
-            result["latest_operator_message_id"] = latest_operator_message_id(conn, str(room_id))
             return result
 
     @app.patch("/api/rooms/{room_id}")
